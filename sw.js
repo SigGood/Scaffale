@@ -1,6 +1,6 @@
 // Scaffale: fa funzionare l'app anche senza rete (i dati sono già sul telefono).
 // Quando aggiorni i file su GitHub, cambia il numero qui sotto.
-const CACHE = 'scaffale-6';
+const CACHE = 'scaffale-7';
 const SHELL = ['./', './index.html', './style.css', './app.js', './cloud.js', './import.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {

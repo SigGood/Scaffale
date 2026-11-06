@@ -555,13 +555,14 @@ function endLabel(type, status) {
 function openLog(w, entry) {
   const T = TYPE[w.type];
   const prevDone = db.entries.some((e) => e.workId === w.id && DONE(e) && (!entry || e.id !== entry.id));
-  const e = entry || { status: 'finito', start: '', end: todayISO(), rating: 0, liked: false, again: prevDone, review: '', spoiler: false, tags: [], format: '', platform: '', hours: '', pages: w.pages || '' };
+  const e = entry ? { ...entry } : { status: 'finito', start: '', end: todayISO(), rating: 0, liked: false, again: prevDone, review: '', spoiler: false, tags: [], format: '', platform: '', hours: '', pages: w.pages || '' };
   const statusBtns = Object.entries(T.status).map(([k, l]) => `<button type="button" data-act="status" data-val="${k}" aria-pressed="${e.status === k}">${l}</button>`).join('');
   const allTags = [...new Set(db.entries.flatMap((x) => x.tags || []))].sort();
   const body = `
     <div style="display:grid;grid-template-columns:60px minmax(0,1fr);gap:12px;align-items:center">${coverHTML(w)}<div><b>${esc(w.title)}</b><div class="small muted">${esc([w.creator, w.year].filter(Boolean).join(' · '))}</div></div></div>
     <div class="seg wrap" role="group" aria-label="Stato" id="status" data-val="${e.status}" data-type="${w.type}">${statusBtns}</div>
-    <div class="row">
+    <label class="check" id="nodateWrap" ${e.status === 'in_corso' ? 'hidden' : ''}><input type="checkbox" id="f-nodate" ${e.undated ? 'checked' : ''}> Senza data (non ricordo quando, non conta nelle statistiche per anno)</label>
+    <div class="row" id="datesRow" ${e.undated ? 'hidden' : ''}>
       <label class="field" ${w.type === 'film' ? 'hidden' : ''}><span>Iniziato il</span><input type="date" id="f-start" value="${esc(e.start)}" max="${todayISO()}"></label>
       <label class="field" id="endWrap" ${e.status === 'in_corso' ? 'hidden' : ''}><span id="endLbl">${endLabel(w.type, e.status)}</span><input type="date" id="f-end" value="${esc(e.end)}" max="${todayISO()}"></label>
     </div>
@@ -583,14 +584,15 @@ function openLog(w, entry) {
     ${entry ? `<button type="button" class="btn danger" data-act="del-entry" data-id="${entry.id}">Elimina questa voce</button>` : ''}`;
   openSheet(entry ? 'Modifica voce' : T.log, body, () => {
     const status = $('#status').dataset.val;
+    const noDate = status !== 'in_corso' && $('#f-nodate').checked;
     const val = (id) => { const el = $('#' + id); return el ? el.value.trim() : ''; };
     const data = {
-      status, start: val('f-start'), end: status === 'in_corso' ? '' : val('f-end') || (entry && entry.undated ? '' : todayISO()),
+      status, start: noDate ? '' : val('f-start'), end: status === 'in_corso' || noDate ? '' : val('f-end') || todayISO(),
       rating: +$('#rating').dataset.val || 0, liked: $('#f-liked').getAttribute('aria-pressed') === 'true',
       again: $('#f-again').checked, review: val('f-review'), spoiler: $('#f-spoiler').checked,
       tags: [...new Set(val('f-tags').split(',').map((t) => t.trim().replace(/^#/, '')).filter(Boolean))],
     };
-    data.undated = !!(entry && entry.undated && !data.end && status !== 'in_corso');
+    data.undated = noDate;
     if (w.type === 'book') { data.format = val('f-format'); data.pages = +val('f-pages') || null; }
     else if (w.type === 'film') { data.where = val('f-where'); }
     else { data.platform = val('f-platform'); data.hours = +String(val('f-hours')).replace(',', '.') || null; }
@@ -853,13 +855,13 @@ function viewProfile() {
 function openFavPicker(type) {
   const seen = new Set(db.entries.filter((e) => work(e.workId)?.type === type).map((e) => e.workId));
   Object.values(db.works).forEach((w) => { if (w.type === type && (w.seen || w.rating)) seen.add(w.id); });
-  const pool = (seen.size ? [...seen].map(work) : Object.values(db.works).filter((w) => w.type === type))
-    .filter((w) => !(db.favorites[type] || []).includes(w.id)).sort((a, b) => (b.liked ? 1 : 0) - (a.liked ? 1 : 0) || (b.rating || 0) - (a.rating || 0) || a.title.localeCompare(b.title));
+  const pool = Object.values(db.works).filter((w) => w.type === type && !(db.favorites[type] || []).includes(w.id))
+    .sort((a, b) => (seen.has(b.id) ? 1 : 0) - (seen.has(a.id) ? 1 : 0) || (b.liked ? 1 : 0) - (a.liked ? 1 : 0) || (b.rating || 0) - (a.rating || 0) || a.title.localeCompare(b.title));
   const row = (w) => `<button type="button" class="pick" data-act="fav-set" data-id="${w.id}">${coverHTML(w)}<span>${esc(w.title)}<br><span class="small muted">${esc([w.creator, w.year].filter(Boolean).join(' · '))}</span></span></button>`;
   const label = { book: 'libro', game: 'gioco', film: 'film' }[type];
   const body = pool.length
     ? `<input type="search" id="favq" placeholder="Cerca tra i tuoi titoli" autocomplete="off"><div id="favlist">${pool.slice(0, 60).map(row).join('')}</div>`
-    : `<p class="muted" style="margin:0">Registra prima qualche ${label} nel diario.</p>`;
+    : `<p class="muted" style="margin:0">Non hai ancora nessun ${label} nello scaffale. Cercalo in “Cerca”, aprilo e tocca la stella “Preferito”.</p>`;
   openSheet(`Scegli un ${label} preferito`, body);
   const q = $('#favq');
   if (q) q.addEventListener('input', () => { const v = norm(q.value); $('#favlist').innerHTML = pool.filter((w) => !v || norm(w.title + ' ' + (w.origTitle || '') + ' ' + (w.creator || '')).includes(v)).slice(0, 60).map(row).join(''); });
@@ -1010,6 +1012,8 @@ document.addEventListener('click', (ev) => {
       const g = $('#status'); g.dataset.val = el.dataset.val;
       $$('button', g).forEach((b) => b.setAttribute('aria-pressed', b === el));
       $('#endWrap').hidden = el.dataset.val === 'in_corso';
+      $('#nodateWrap').hidden = el.dataset.val === 'in_corso';
+      if (el.dataset.val === 'in_corso') { $('#f-nodate').checked = false; $('#datesRow').hidden = false; }
       $('#endLbl').textContent = endLabel(g.dataset.type, el.dataset.val);
       if (el.dataset.val !== 'in_corso' && !$('#f-end').value) $('#f-end').value = todayISO();
       break;
@@ -1103,6 +1107,7 @@ document.addEventListener('submit', (ev) => {
   }
 });
 document.addEventListener('change', (ev) => {
+  if (ev.target.id === 'f-nodate') { $('#datesRow').hidden = ev.target.checked; if (!ev.target.checked && !$('#f-end').value) $('#f-end').value = todayISO(); }
   if (ev.target.id === 'yearSel' && ev.target.value) { ui.statsYear = ev.target.value; saveUI(); render(); }
 });
 document.addEventListener('input', (ev) => {
