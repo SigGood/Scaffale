@@ -282,20 +282,38 @@ async function matchFilm(w) {
   else if (norm2(best.original_title) !== norm2(name) && norm2(best.title) !== norm2(name)) out.check = 'titolo diverso';
   return out;
 }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let gbCooldownUntil = 0; // Google Books ci ha chiesto di rallentare: fino a quest'ora usiamo solo Open Library
 async function matchBook(w) {
   if (!w.isbn) { delete w.pending; if (!w.cover) w.check = 'senza ISBN: copertina da cercare'; return w; }
-  try {
-    const d = await getJSON(`https://www.googleapis.com/books/v1/volumes?q=isbn:${w.isbn}&maxResults=1`);
-    const v = d.items && d.items[0] && d.items[0].volumeInfo;
-    if (v) {
-      const img = v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail);
-      if (img) w.cover = img.replace(/^http:/, 'https:').replace('&edge=curl', '');
-      if (!w.pages && v.pageCount) w.pages = v.pageCount;
-      if (!w.genres.length && v.categories) w.genres = v.categories.slice(0, 3);
+  let v = null;
+  if (Date.now() > gbCooldownUntil) {
+    for (let attempt = 0; attempt < 3 && !v; attempt++) {
+      try {
+        const d = await getJSON(`https://www.googleapis.com/books/v1/volumes?q=isbn:${w.isbn}&maxResults=1`);
+        v = (d.items && d.items[0] && d.items[0].volumeInfo) || {};
+      } catch (e) {
+        if (!e.status) throw Object.assign(e, { code: 'net' });
+        if (e.status === 429 || e.status >= 500) { await sleep([4000, 12000, 30000][attempt]); continue; }
+        v = {};
+      }
     }
-  } catch (e) {
-    if (!e.status) throw Object.assign(e, { code: 'net' });
-    if (e.status === 429 || e.status >= 500) throw e;
+    if (!v) gbCooldownUntil = Date.now() + 10 * 60000; // troppi rifiuti: 10 minuti di pausa da Google
+  }
+  if (v && v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail)) {
+    w.cover = (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail).replace(/^http:/, 'https:').replace('&edge=curl', '');
+  } else {
+    // riserva: Open Library
+    try {
+      const d = await getJSON(`https://openlibrary.org/api/books?bibkeys=ISBN:${w.isbn}&format=json&jscmd=data`);
+      const b = d['ISBN:' + w.isbn];
+      if (b && b.cover) w.cover = (b.cover.large || b.cover.medium || '').replace(/^http:/, 'https:') || w.cover;
+      if (b && !w.pages && b.number_of_pages) w.pages = b.number_of_pages;
+    } catch (e) { if (!e.status) throw Object.assign(e, { code: 'net' }); }
+  }
+  if (v) {
+    if (!w.pages && v.pageCount) w.pages = v.pageCount;
+    if (!w.genres.length && v.categories) w.genres = v.categories.slice(0, 3);
   }
   delete w.pending;
   return w;
@@ -305,31 +323,36 @@ async function runMatcher() {
   if (matcher.running) return;
   const queue = Object.values(db.works).filter((w) => w.pending && (w.pending !== 'tmdb' || appConfig.ponte));
   if (!queue.length) return;
+  const films = queue.filter((w) => w.pending === 'tmdb');
+  const books = queue.filter((w) => w.pending !== 'tmdb');
   matcher.running = true; matcher.paused = ''; matcher.done = 0; matcher.total = queue.length;
   softRender();
-  let lastSave = Date.now(), stop = '';
-  const worker = async () => {
-    while (queue.length && !stop) {
-      const w = db.works[queue.shift().id];
+  let lastSave = Date.now(), stop = '', busy = false;
+  // film: 4 alla volta; libri: uno alla volta e con calma (Google Books limita le richieste)
+  const worker = async (list, pause) => {
+    while (list.length && !stop) {
+      const w = db.works[list.shift().id];
       if (!w || !w.pending) { matcher.done++; continue; }
       try {
         if (w.pending === 'tmdb') await matchFilm(w); else await matchBook(w);
       } catch (e) {
-        if (e.code === 'net' || e.status === 429 || (e.status >= 500)) { stop = e.code === 'net' ? 'Ricerca locandine in pausa: sei offline.' : 'Ricerca locandine in pausa: il servizio è occupato.'; break; }
+        if (e.code === 'net') { stop = 'Ricerca locandine in pausa: sei offline.'; break; }
         if (e.status === 401 || e.status === 403) { stop = e.message; break; }
+        if (e.status === 429 || e.status >= 500) { busy = true; stop = 'Ricerca locandine in pausa: il servizio è occupato. Riprendo da solo tra un minuto.'; break; }
         delete w.pending; w.check = 'errore durante la ricerca';
       }
       matcher.done++;
       updateMatchUI();
       if (Date.now() - lastSave > 4000) { lastSave = Date.now(); save(); }
-      await new Promise((r) => setTimeout(r, 60));
+      await sleep(pause);
     }
   };
-  await Promise.all([worker(), worker(), worker(), worker()]);
+  await Promise.all([worker(films, 60), worker(films, 60), worker(films, 60), worker(films, 60), worker(books, 1200)]);
   matcher.running = false;
   matcher.paused = stop;
   save();
   softRender();
+  if (busy) setTimeout(() => { matcher.paused = ''; runMatcher(); }, 60000);
   if (!stop) {
     const n = Object.values(db.works).filter((w) => w.check).length;
     toast(n ? `Locandine completate. ${fmtCount(n, 'titolo', 'titoli')} da controllare in Impostazioni` : 'Locandine completate');
