@@ -39,6 +39,10 @@
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg>
     <span>Liste</span>
   </a>
+  <a href="#/amici" data-tab="amici">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.5a5 5 0 0 1 6 5"/></svg>
+    <span>Amici</span>
+  </a>
   <a href="#/profilo" data-tab="profilo">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
     <span>Profilo</span>
@@ -48,6 +52,8 @@
 <dialog id="sheet" aria-label="Pannello"></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 
+<script src="cloud.js"></script>
+<script src="import.js"></script>
 <script src="app.js"></script>
 <script>
   if ('serviceWorker' in navigator) {

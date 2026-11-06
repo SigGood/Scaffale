@@ -1,0 +1,10 @@
+// CONFIGURAZIONE DI SCAFFALE
+// Le righe che iniziano con // sono solo spiegazioni.
+
+// 1) PONTE CLOUDFLARE (ricerca di film e giochi)
+// Sostituisci l'indirizzo qui sotto con quello del tuo ponte (lo vedi su Cloudflare dopo il Deploy).
+ponte = https://INDIRIZZO-DEL-TUO-PONTE.workers.dev
+
+// 2) FIREBASE (account, sincronizzazione e amici)
+// Incolla qui sotto il blocco che ti dà Firebase, quello che inizia con  const firebaseConfig = {
+

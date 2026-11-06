@@ -51,39 +51,59 @@ const TYPE = {
     label: 'Gioco', plural: 'Giochi', creator: 'Sviluppatore', wish: 'Da giocare', log: 'Registra partita',
     status: { finito: 'Finito', completato: 'Completato al 100%', in_corso: 'In corso', abbandonato: 'Abbandonato' },
   },
+  film: {
+    label: 'Film', plural: 'Film', creator: 'Regia', wish: 'Da vedere', log: 'Registra visione',
+    status: { finito: 'Visto', abbandonato: 'Interrotto' },
+  },
 };
+const TYPES = ['book', 'game', 'film'];
 const DONE = (e) => e.status === 'finito' || e.status === 'completato';
 const BOOK_FORMATS = ['Cartaceo', 'Ebook', 'Audiolibro'];
 
 /* ================= archivio ================= */
 const KEY = 'scaffale-v1';
 const UI_KEY = 'scaffale-ui';
-const emptyDB = () => ({ version: 1, works: {}, entries: [], lists: [], favorites: { book: [], game: [] }, settings: { rawgKey: '' } });
-let db = loadDB();
+const emptyDB = () => ({ version: 2, works: {}, entries: [], lists: [], favorites: { book: [], game: [], film: [] }, settings: {} });
+const normDB = (d) => { const base = emptyDB(); return { ...base, ...d, favorites: { ...base.favorites, ...(d.favorites || {}) }, settings: { ...base.settings, ...(d.settings || {}) } }; };
+let db = emptyDB();
 let ui = loadUI();
 
-function loadDB() {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) {
-      const d = JSON.parse(raw);
-      const base = emptyDB();
-      return { ...base, ...d, favorites: { ...base.favorites, ...(d.favorites || {}) }, settings: { ...base.settings, ...(d.settings || {}) } };
-    }
-  } catch (e) { /* archivio illeggibile: si riparte vuoti */ }
+// archivio: IndexedDB (spazio ampio, adatto a migliaia di film), con localStorage come riserva
+const IDB = {
+  conn: null,
+  open() {
+    return this.conn || (this.conn = new Promise((res, rej) => {
+      const r = indexedDB.open('scaffale', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    }));
+  },
+  async get(k) { const d = await this.open(); return new Promise((res, rej) => { const q = d.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); },
+  async set(k, v) { const d = await this.open(); return new Promise((res, rej) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); },
+};
+async function loadDB() {
+  try { const raw = await IDB.get('db'); if (raw) return normDB(JSON.parse(raw)); } catch (e) { /* riserva sotto */ }
+  try { const raw = localStorage.getItem(KEY); if (raw) { const d = normDB(JSON.parse(raw)); persistNow(d); return d; } } catch (e) { /* */ }
   return emptyDB();
 }
-function save() {
-  try { localStorage.setItem(KEY, JSON.stringify(db)); return true; }
-  catch (e) { toast('Memoria piena: esporta un backup e togli qualche copertina caricata a mano'); return false; }
+let persistTimer;
+async function persistNow(d = db) {
+  clearTimeout(persistTimer);
+  const json = JSON.stringify(d);
+  try { await IDB.set('db', json); try { localStorage.removeItem(KEY); } catch (e) { /* */ } }
+  catch (e) { try { localStorage.setItem(KEY, json); } catch (e2) { toast('Memoria del telefono piena: esporta un backup'); } }
 }
+function persist() { clearTimeout(persistTimer); persistTimer = setTimeout(persistNow, 300); }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && persistTimer) persistNow(); });
+function save() { persist(); if (typeof scheduleSync === 'function') scheduleSync(); return true; }
 function loadUI() { try { return JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch (e) { return {}; } }
 function saveUI() { try { localStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch (e) { /* non importa */ } }
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
 const work = (id) => db.works[id];
 const entriesOf = (wid) => db.entries.filter((e) => e.workId === wid);
-const entryDate = (e) => e.end || e.start || (e.created || '').slice(0, 10);
+const entryDate = (e) => e.end || e.start || (e.undated ? '' : (e.created || '').slice(0, 10));
 const findBySource = (src, sid) => Object.values(db.works).find((w) => w.source === src && String(w.sourceId) === String(sid));
 
 /* ================= copertine e stelle ================= */
@@ -107,13 +127,15 @@ const ratingText = (v) => (v ? (v / 2).toLocaleString('it-IT') : '—');
 
 /* ================= rotte ================= */
 let preview = null; // opera trovata in ricerca ma non ancora salvata
+// contesto di disegno: ro = sola lettura (scaffale di un amico)
+let ctx = { ro: false, link: '#/opera/', name: '', fid: '', mineId: '' };
 
 function parseHash() {
   const h = location.hash.replace(/^#\/?/, '') || 'diario';
   const [path, qs] = h.split('?');
   const parts = path.split('/').map(decodeURIComponent);
   const q = Object.fromEntries(new URLSearchParams(qs || ''));
-  return { name: parts[0], id: parts[1], q };
+  return { name: parts[0], id: parts[1], parts, q };
 }
 function go(hash, replace = false) {
   if (replace) { history.replaceState(null, '', hash); render(); }
@@ -123,12 +145,14 @@ window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); }
 
 function render() {
   const r = parseHash();
-  const tab = { diario: 'diario', cerca: 'cerca', 'da-fare': 'da-fare', liste: 'liste', lista: 'liste', profilo: 'profilo', impostazioni: 'profilo' }[r.name];
+  if (r.name !== 'cerca') search.replace = null;
+  const tab = { diario: 'diario', cerca: 'cerca', 'da-fare': 'da-fare', liste: 'liste', lista: 'liste', profilo: 'profilo', impostazioni: 'profilo', controlla: 'profilo', amici: 'amici', amico: 'amici' }[r.name];
   $$('.tabbar a').forEach((a) => { if (a.dataset.tab === tab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   const view = $('#view');
   const V = {
     diario: viewDiary, cerca: viewSearch, 'da-fare': viewWish, liste: viewLists, lista: viewList,
     profilo: viewProfile, impostazioni: viewSettings, opera: viewWork, anteprima: viewWork,
+    amici: viewFriends, amico: viewFriend, controlla: viewCheck,
   }[r.name] || viewDiary;
   view.innerHTML = V(r);
   if (V.after) V.after(r);
@@ -137,7 +161,7 @@ function render() {
 /* ================= DIARIO ================= */
 function typeFilter(key, val) {
   return `<div class="seg" role="group" aria-label="Filtro">
-    ${[['all', 'Tutto'], ['book', 'Libri'], ['game', 'Giochi']].map(([k, l]) => `<button data-act="filter" data-key="${key}" data-val="${k}" aria-pressed="${val === k}">${l}</button>`).join('')}
+    ${[['all', 'Tutto'], ['book', 'Libri'], ['game', 'Giochi'], ['film', 'Film']].map(([k, l]) => `<button data-act="filter" data-key="${key}" data-val="${k}" aria-pressed="${val === k}">${l}</button>`).join('')}
   </div>`;
 }
 function viewDiary(r) {
@@ -145,22 +169,25 @@ function viewDiary(r) {
   const tag = r.q.tag;
   const ok = (e) => { const w = work(e.workId); return w && (f === 'all' || w.type === f) && (!tag || (e.tags || []).includes(tag)); };
   const current = db.entries.filter((e) => e.status === 'in_corso' && ok(e)).sort((a, b) => (b.start || '').localeCompare(a.start || ''));
-  const done = db.entries.filter((e) => e.status !== 'in_corso' && ok(e)).sort((a, b) => entryDate(b).localeCompare(entryDate(a)) || (b.created || '').localeCompare(a.created || ''));
+  const done = db.entries.filter((e) => e.status !== 'in_corso' && entryDate(e) && ok(e)).sort((a, b) => entryDate(b).localeCompare(entryDate(a)) || (b.created || '').localeCompare(a.created || ''));
 
-  let h = `<header class="top"><h1>Diario</h1><a class="icon-btn" href="#/cerca" aria-label="Aggiungi">${ICON.plus}</a></header>${typeFilter('diaryType', f)}`;
+  let h = (ctx.ro ? '' : `<header class="top"><h1>Diario</h1><a class="icon-btn" href="#/cerca" aria-label="Aggiungi">${ICON.plus}</a></header>`) + typeFilter('diaryType', f);
   if (tag) h += `<p class="chips" style="margin-top:12px"><a class="chip on" href="#/diario">#${esc(tag)} ✕</a></p>`;
+  if (!ctx.ro) h += matchStatusHTML();
 
   if (current.length) {
-    h += `<h2>In corso</h2><div class="strip">${current.map((e) => { const w = work(e.workId); return `<a href="#/opera/${w.id}">${coverHTML(w)}<span class="cap">${esc(w.title)}</span></a>`; }).join('')}</div>`;
+    h += `<h2>In corso</h2><div class="strip">${current.map((e) => { const w = work(e.workId); return `<a href="${ctx.link}${w.id}">${coverHTML(w)}<span class="cap">${esc(w.title)}</span></a>`; }).join('')}</div>`;
   }
   if (!done.length && !current.length) {
+    if (ctx.ro) return h + '<div class="empty"><p>Ancora nessuna voce.</p></div>';
     h += `<div class="empty"><p>${tag ? 'Nessuna voce con questo tag.' : 'Il diario è vuoto. Cerca un libro o un gioco che hai finito e registralo con data e voto.'}</p><a class="btn primary" href="#/cerca">${ICON.search} Cerca un titolo</a></div>`;
     return h;
   }
   let month = '';
   const count = {};
   done.forEach((e) => { const m = entryDate(e).slice(0, 7); count[m] = (count[m] || 0) + 1; });
-  done.forEach((e) => {
+  const limit = ui.diaryLimit || 200;
+  done.slice(0, limit).forEach((e) => {
     const w = work(e.workId);
     const d = entryDate(e);
     const m = d.slice(0, 7);
@@ -173,13 +200,14 @@ function viewDiary(r) {
     const badges = [];
     if (e.status === 'abbandonato') badges.push('<span class="pill drop">Abbandonato</span>');
     if (e.status === 'completato') badges.push('<span class="pill full">100%</span>');
-    h += `<a class="entry" href="#/opera/${w.id}">
+    h += `<a class="entry" href="${ctx.link}${w.id}">
       <div class="day">${+d.slice(8)}<small>${esc(dow)}</small></div>
       ${coverHTML(w)}
       <div style="min-width:0"><div class="t">${esc(w.title)}</div>
         <div class="meta">${starsHTML(e.rating)}${e.liked ? ICON.heartS : ''}${e.again ? ICON.again : ''}${e.review ? ICON.text : ''}${badges.join('')}<span>${esc(w.year || '')}</span></div>
       </div></a>`;
   });
+  if (done.length > limit) h += `<button class="btn block" style="margin-top:16px" data-act="more">Mostra altre voci (${fmtNum(done.length - limit)})</button>`;
   return h;
 }
 
@@ -188,18 +216,18 @@ let search = { type: 'book', q: '', results: null, loading: false, error: '' };
 let searchTimer, searchSeq = 0;
 
 function viewSearch() {
-  search.type = ui.searchType || search.type;
+  search.type = search.replace && work(search.replace) ? work(search.replace).type : ui.searchType || search.type;
   const t = search.type;
-  const noKey = t === 'game' && !db.settings.rawgKey;
-  let h = `<header class="top"><h1>Cerca</h1></header>
-  <div class="seg" role="group" aria-label="Tipo"><button data-act="stype" data-val="book" aria-pressed="${t === 'book'}">Libri</button><button data-act="stype" data-val="game" aria-pressed="${t === 'game'}">Videogiochi</button></div>
-  <form class="searchbar" data-form="search" role="search">
-    <input id="q" type="search" enterkeyhint="search" autocomplete="off" placeholder="${t === 'book' ? 'Titolo, autore o ISBN' : 'Nome del gioco'}" value="${esc(search.q)}" ${noKey ? 'disabled' : ''}>
+  const noKey = t !== 'book' && !appConfig.ponte;
+  const replacing = search.replace && work(search.replace);
+  let h = `<header class="top">${replacing ? `<button class="icon-btn" data-act="cancel-replace" aria-label="Annulla">${ICON.close}</button>` : ''}<h1>${replacing ? 'Cambia abbinamento' : 'Cerca'}</h1></header>`;
+  if (replacing) h += `<p class="small muted" style="margin-top:0">Scegli il risultato giusto per <b>${esc(replacing.lbName || replacing.title)}</b>${replacing.year ? ' (' + esc(replacing.year) + ')' : ''}. Voti, date e recensioni restano.</p>`;
+  else h += `<div class="seg" role="group" aria-label="Tipo">${[['book', 'Libri'], ['game', 'Giochi'], ['film', 'Film']].map(([k, l]) => `<button data-act="stype" data-val="${k}" aria-pressed="${t === k}">${l}</button>`).join('')}</div>`;
+  h += `<form class="searchbar" data-form="search" role="search">
+    <input id="q" type="search" enterkeyhint="search" autocomplete="off" placeholder="${{ book: 'Titolo, autore o ISBN', game: 'Nome del gioco', film: 'Titolo del film' }[t]}" value="${esc(search.q)}" ${noKey ? 'disabled' : ''}>
   </form>`;
   if (noKey) {
-    h += `<div class="note"><p><b>Serve una chiave gratuita di RAWG</b> per cercare i videogiochi. Si fa una volta sola.</p>
-      <p class="small muted">1. Apri <a href="https://rawg.io/apidocs" target="_blank" rel="noopener">rawg.io/apidocs</a> e premi “Get API Key”.<br>2. Registrati (gratis) e compila il modulo: come sito puoi scrivere l'indirizzo di questa app.<br>3. Copia la chiave e incollala qui sotto.</p>
-      <form class="searchbar" data-form="rawg" style="margin:0"><input id="rawgKey" type="text" placeholder="Incolla la chiave" autocomplete="off"><button class="btn primary">Salva</button></form></div>`;
+    h += `<div class="note"><p><b>La ricerca di ${t === 'film' ? 'film' : 'giochi'} non è ancora attiva.</b></p><p class="small muted">Serve il “ponte” Cloudflare: segui la guida e scrivi il suo indirizzo nel file config.txt su GitHub. Intanto puoi aggiungere i titoli a mano.</p></div>`;
   }
   h += `<div id="results">${resultsHTML()}</div>
   <div class="note" style="margin-top:24px"><p class="small muted">Non trovi quello che cerchi?</p><button class="btn" data-act="manual">${ICON.plus} Aggiungi a mano</button></div>`;
@@ -231,7 +259,7 @@ async function runSearch(q) {
   const seq = ++searchSeq;
   search.loading = true; search.error = ''; refreshResults();
   try {
-    const res = search.type === 'book' ? await searchBooks(q) : await searchGames(q);
+    const res = await { book: searchBooks, game: searchGames, film: searchFilms }[search.type](q);
     if (seq !== searchSeq) return;
     search.results = res;
   } catch (err) {
@@ -250,63 +278,137 @@ async function getJSON(url) {
 }
 async function searchBooks(q) {
   const isbn = q.replace(/[-\s]/g, '');
-  const gq = /^\d{10}(\d{3})?$/.test(isbn) ? 'isbn:' + isbn : q;
-  const [g, o] = await Promise.allSettled([
-    getJSON(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(gq)}&maxResults=15&printType=books`),
-    getJSON(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=12&lang=it&fields=key,title,author_name,first_publish_year,cover_i,number_of_pages_median,subject`),
+  const isIsbn = /^\d{10}(\d{3})?$/.test(isbn);
+  const gq = encodeURIComponent(isIsbn ? 'isbn:' + isbn : q);
+  const GB = 'https://www.googleapis.com/books/v1/volumes?printType=books&q=' + gq;
+  // tre ricerche in parallelo: Google Books solo in italiano, Google Books in tutte le lingue, Open Library (edizione italiana se c'è)
+  const [gi, ga, o] = await Promise.allSettled([
+    getJSON(GB + '&langRestrict=it&maxResults=20'),
+    getJSON(GB + '&maxResults=10'),
+    getJSON(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=12&lang=it&fields=key,title,author_name,first_publish_year,cover_i,number_of_pages_median,subject,editions,editions.key,editions.title,editions.language,editions.cover_i`),
   ]);
-  const out = [];
-  if (g.status === 'fulfilled') {
-    (g.value.items || []).forEach((it) => {
-      const v = it.volumeInfo || {};
+  const it = [], other = [], seen = new Set();
+  const addGB = (res) => {
+    if (res.status !== 'fulfilled') return;
+    (res.value.items || []).forEach((item) => {
+      if (seen.has(item.id)) return;
+      seen.add(item.id);
+      const v = item.volumeInfo || {};
       let img = (v.imageLinks && (v.imageLinks.thumbnail || v.imageLinks.smallThumbnail)) || '';
       img = img.replace(/^http:/, 'https:').replace('&edge=curl', '');
-      out.push({
-        type: 'book', title: v.subtitle && v.title.length < 30 ? `${v.title}. ${v.subtitle}` : v.title || 'Senza titolo',
+      const ita = v.language === 'it';
+      (ita ? it : other).push({
+        type: 'book', title: v.subtitle && (v.title || '').length < 30 ? `${v.title}. ${v.subtitle}` : v.title || 'Senza titolo',
         creator: (v.authors || []).join(', '), year: (v.publishedDate || '').slice(0, 4), cover: img,
         pages: v.pageCount || null, genres: (v.categories || []).slice(0, 3), platforms: [],
-        source: 'gbooks', sourceId: it.id, sourceName: 'Google Books',
+        source: 'gbooks', sourceId: item.id, sourceName: 'Google Books' + (ita ? ' · italiano' : v.language ? ' · ' + v.language : ''),
       });
     });
-  }
+  };
+  addGB(gi); addGB(ga);
   if (o.status === 'fulfilled') {
     (o.value.docs || []).forEach((d) => {
-      out.push({
-        type: 'book', title: d.title || 'Senza titolo', creator: (d.author_name || []).slice(0, 3).join(', '),
-        year: d.first_publish_year ? String(d.first_publish_year) : '', cover: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-L.jpg` : '',
+      const ed = d.editions && d.editions.docs && d.editions.docs[0];
+      const ita = !!(ed && (ed.language || []).includes('ita'));
+      const coverId = (ita && ed.cover_i) || d.cover_i;
+      (ita ? it : other).push({
+        type: 'book', title: (ita && ed.title) || d.title || 'Senza titolo', creator: (d.author_name || []).slice(0, 3).join(', '),
+        year: d.first_publish_year ? String(d.first_publish_year) : '', cover: coverId ? `https://covers.openlibrary.org/b/id/${coverId}-L.jpg` : '',
         pages: d.number_of_pages_median || null, genres: (d.subject || []).slice(0, 3), platforms: [],
-        source: 'openlibrary', sourceId: d.key, sourceName: 'Open Library',
+        source: 'openlibrary', sourceId: ita && ed.key ? ed.key : d.key, sourceName: 'Open Library' + (ita ? ' · italiano' : ''),
       });
     });
   }
-  if (g.status === 'rejected' && o.status === 'rejected') throw new Error('Ricerca non riuscita. Controlla la connessione e riprova.');
-  return out;
+  if ([gi, ga, o].every((r) => r.status === 'rejected')) throw new Error('Ricerca non riuscita. Controlla la connessione e riprova.');
+  return [...it, ...other];
 }
-function rawgImg(url, w = 640) { return url ? url.replace('/media/games/', `/media/resize/${w}/-/games/`).replace('/media/screenshots/', `/media/resize/${w}/-/screenshots/`) : ''; }
-async function searchGames(q) {
-  const key = db.settings.rawgKey;
-  let d;
-  try {
-    d = await getJSON(`https://api.rawg.io/api/games?key=${encodeURIComponent(key)}&search=${encodeURIComponent(q)}&page_size=20&search_precise=true`);
-  } catch (e) {
-    if (e.status === 401 || e.status === 403) throw new Error('La chiave RAWG non funziona. Controllala in Profilo → Impostazioni.');
-    throw new Error('Ricerca non riuscita. Controlla la connessione e riprova.');
+async function ponte(path) {
+  if (!appConfig.ponte) { const e = new Error('Il ponte non è configurato.'); e.code = 'noponte'; throw e; }
+  let r;
+  try { r = await fetch(appConfig.ponte.replace(/\/+$/, '') + path); }
+  catch (e) { const er = new Error('Ricerca non riuscita. Controlla la connessione e riprova.'); er.code = 'net'; throw er; }
+  if (!r.ok) {
+    let msg = 'Il ponte ha risposto con un errore (' + r.status + ').';
+    if (r.status === 401 || r.status === 403) msg = 'Il ponte non accetta le chiavi: controlla Client ID, Secret e chiave TMDB nel codice su Cloudflare.';
+    const e = new Error(msg); e.status = r.status; throw e;
   }
-  return (d.results || []).map((g) => ({
-    type: 'game', title: g.name, creator: '', year: (g.released || '').slice(0, 4), cover: rawgImg(g.background_image),
-    pages: null, genres: (g.genres || []).map((x) => x.name).slice(0, 3), platforms: (g.platforms || []).map((p) => p.platform.name),
-    source: 'rawg', sourceId: g.id, sourceName: 'RAWG',
-  }));
+  return r.json();
 }
-async function enrichGame(w) {
-  if (w.source !== 'rawg' || w.creator || !db.settings.rawgKey) return;
+const TMDB_IMG = 'https://image.tmdb.org/t/p/w342';
+const TMDB_GENRES = { 28: 'Azione', 12: 'Avventura', 16: 'Animazione', 35: 'Commedia', 80: 'Crime', 99: 'Documentario', 18: 'Dramma', 10751: 'Famiglia', 14: 'Fantasy', 36: 'Storia', 27: 'Horror', 10402: 'Musica', 9648: 'Mistero', 10749: 'Romance', 878: 'Fantascienza', 10770: 'Film TV', 53: 'Thriller', 10752: 'Guerra', 37: 'Western' };
+function filmFromTmdb(m) {
+  return {
+    type: 'film', title: m.title || m.original_title || 'Senza titolo', origTitle: m.original_title && m.original_title !== m.title ? m.original_title : '',
+    creator: '', year: (m.release_date || '').slice(0, 4), cover: m.poster_path ? TMDB_IMG + m.poster_path : '',
+    pages: null, runtime: null, genres: (m.genre_ids || []).map((g) => TMDB_GENRES[g]).filter(Boolean).slice(0, 3), platforms: [],
+    source: 'tmdb', sourceId: m.id, sourceName: 'TMDB',
+  };
+}
+async function searchFilms(q) {
+  const d = await ponte(`/tmdb/search/movie?query=${encodeURIComponent(q)}&language=it-IT&include_adult=false`);
+  return (d.results || []).slice(0, 20).map(filmFromTmdb);
+}
+// dettagli di un film: regia, durata, generi
+async function tmdbDetails(w, id) {
+  const d = await ponte(`/tmdb/movie/${id}?language=it-IT&append_to_response=credits`);
+  const dirs = ((d.credits && d.credits.crew) || []).filter((c) => c.job === 'Director').map((c) => c.name);
+  return {
+    title: d.title || w.title, origTitle: d.original_title && d.original_title !== d.title ? d.original_title : '',
+    year: (d.release_date || '').slice(0, 4) || w.year, cover: d.poster_path ? TMDB_IMG + d.poster_path : w.cover,
+    creator: dirs.slice(0, 2).join(', '), runtime: d.runtime || null, genres: (d.genres || []).map((g) => g.name).slice(0, 3),
+  };
+}
+async function searchGames(q) {
+  const d = await ponte(`/igdb?q=${encodeURIComponent(q)}`);
+  return (Array.isArray(d) ? d : []).map((g) => ({
+    type: 'game', title: g.name, year: g.first_release_date ? String(new Date(g.first_release_date * 1000).getUTCFullYear()) : '',
+    creator: (g.involved_companies || []).filter((c) => c.developer && c.company).map((c) => c.company.name).slice(0, 2).join(', '),
+    cover: g.cover && g.cover.image_id ? `https://images.igdb.com/igdb/image/upload/t_cover_big/${g.cover.image_id}.jpg` : '',
+    pages: null, genres: (g.genres || []).map((x) => x.name).slice(0, 3), platforms: (g.platforms || []).map((p) => p.name),
+    source: 'igdb', sourceId: g.id, sourceName: 'IGDB',
+  })).sort((a, b) => (b.cover ? 1 : 0) - (a.cover ? 1 : 0));
+}
+async function enrichPreview(w) {
+  if (w.type !== 'film' || w.source !== 'tmdb' || w.creator || w._enriching) return;
+  w._enriching = true;
   try {
-    const d = await getJSON(`https://api.rawg.io/api/games/${w.sourceId}?key=${encodeURIComponent(db.settings.rawgKey)}`);
-    w.creator = (d.developers || []).map((x) => x.name).slice(0, 2).join(', ');
-    if (!w.genres.length) w.genres = (d.genres || []).map((x) => x.name).slice(0, 3);
+    Object.assign(w, await tmdbDetails(w, w.sourceId));
     if (db.works[w.id]) save();
     if (w.creator) { const by = $('#by'); if (by) by.textContent = w.creator; }
   } catch (e) { /* facoltativo */ }
+  delete w._enriching;
+}
+
+/* ================= abbinamenti ================= */
+// sposta voci, liste e preferiti da un titolo a un altro (doppioni)
+function mergeInto(src, dst) {
+  if (src.id === dst.id) return dst;
+  db.entries.forEach((e) => { if (e.workId === src.id) e.workId = dst.id; });
+  ['liked', 'wish', 'seen'].forEach((k) => { if (src[k]) dst[k] = true; });
+  ['rating', 'wishAdded', 'lbKey', 'grId'].forEach((k) => { if (src[k] && !dst[k]) dst[k] = src[k]; });
+  db.lists.forEach((l) => { l.items = [...new Set(l.items.map((id) => (id === src.id ? dst.id : id)))]; });
+  TYPES.forEach((t) => { db.favorites[t] = [...new Set((db.favorites[t] || []).map((id) => (id === src.id ? dst.id : id)))]; });
+  delete db.works[src.id];
+  return dst;
+}
+const MATCH_FIELDS = ['title', 'origTitle', 'creator', 'year', 'cover', 'pages', 'runtime', 'platforms', 'genres', 'source', 'sourceId'];
+function applyMatch(w, r) {
+  if (!w.lbName && w.source === 'letterboxd') w.lbName = w.title;
+  MATCH_FIELDS.forEach((k) => { if (r[k] !== undefined && r[k] !== null && r[k] !== '') w[k] = r[k]; });
+  if (r.cover === '' && w.source !== 'goodreads') w.cover = w.cover || '';
+  delete w.check; delete w.pending;
+  const twin = Object.values(db.works).find((x) => x.id !== w.id && x.source === w.source && String(x.sourceId) === String(w.sourceId));
+  return twin ? mergeInto(w, twin) : w;
+}
+async function pickReplacement(w, r) {
+  let data = { ...r };
+  if (r.type === 'film' && r.source === 'tmdb') { try { data = { ...data, ...(await tmdbDetails(r, r.sourceId)) }; } catch (e) { /* bastano i dati della ricerca */ } }
+  delete data.sourceName;
+  const res = applyMatch(w, data);
+  search.replace = null; search.results = null; search.q = '';
+  save();
+  toast('Abbinamento aggiornato');
+  go(`#/opera/${res.id}`, true);
 }
 
 /* ================= SCHEDA OPERA ================= */
@@ -334,46 +436,54 @@ function viewWork(r) {
   const T = TYPE[w.type];
   const es = db.entries.filter((e) => e.workId === w.id).sort((a, b) => entryDate(b).localeCompare(entryDate(a)));
   const rated = es.filter((e) => e.rating);
-  const avg = rated.length ? rated.reduce((s, e) => s + e.rating, 0) / rated.length : 0;
-  const times = es.filter(DONE).length;
+  const avg = rated.length ? rated.reduce((s, e) => s + e.rating, 0) / rated.length : (w.rating || 0);
+  const times = es.filter(DONE).length || (w.seen ? 1 : 0);
   const inLists = db.lists.filter((l) => l.items.includes(w.id)).length;
   const fav = (db.favorites[w.type] || []).includes(w.id);
   const meta = [];
   meta.push(`<span class="pill ${w.type}">${T.label}</span>`);
   if (w.year) meta.push(`<span class="pill" style="color:var(--muted)">${esc(w.year)}</span>`);
   if (w.pages) meta.push(`<span class="pill" style="color:var(--muted)">${w.pages} pagine</span>`);
+  if (w.runtime) meta.push(`<span class="pill" style="color:var(--muted)">${w.runtime} min</span>`);
 
   let h = `<header class="top"><button class="icon-btn" data-act="back" aria-label="Indietro">${ICON.back}</button><div style="flex:1"></div>
-    ${r.name === 'opera' ? `<button class="icon-btn" data-act="edit-work" aria-label="Modifica informazioni">${ICON.edit}</button>` : ''}</header>
+    ${r.name === 'opera' && !ctx.ro ? `<button class="icon-btn" data-act="edit-work" aria-label="Modifica informazioni">${ICON.edit}</button>` : ''}</header>
   <section class="hero">${coverHTML(w)}
-    <div style="min-width:0"><h1>${esc(w.title)}</h1><div class="by" id="by">${esc(w.creator || '')}</div><div class="meta">${meta.join('')}</div></div>
+    <div style="min-width:0"><h1>${esc(w.title)}</h1>${w.origTitle ? `<div class="small muted">${esc(w.origTitle)}</div>` : ''}<div class="by" id="by">${esc(w.creator || '')}</div><div class="meta">${meta.join('')}</div></div>
   </section>
-  <div class="actions">
+  ${ctx.ro ? (ctx.mineId ? `<a class="btn primary block log-cta" href="#/opera/${ctx.mineId}">Apri nel tuo scaffale</a>` : `<button class="btn primary block log-cta" data-act="copy-friend">${ICON.plus} Aggiungi al tuo scaffale</button>`) : `<div class="actions">
     <button class="act like" data-act="like" aria-pressed="${!!w.liked}">${ICON.heart}<span>Mi piace</span></button>
     <button class="act" data-act="wish" aria-pressed="${!!w.wish}">${ICON.bookmark}<span>${T.wish}</span></button>
     <button class="act" data-act="to-list" aria-pressed="${inLists > 0}">${ICON.list}<span>${inLists ? `In ${inLists} ${inLists === 1 ? 'lista' : 'liste'}` : 'Liste'}</span></button>
     <button class="act" data-act="fav" aria-pressed="${fav}">${ICON.star}<span>Preferito</span></button>
   </div>
-  <button class="btn primary block log-cta" data-act="log">${ICON.plus} ${T.log}</button>`;
+  <button class="btn primary block log-cta" data-act="log">${ICON.plus} ${T.log}</button>`}`;
+  if (!ctx.ro) h += friendsOnWork(w);
+  if (!ctx.ro && r.name === 'opera' && (w.check || w.pending)) {
+    h += `<div class="note" style="margin-top:14px"><p class="small">${w.pending ? 'Sto cercando locandina e informazioni per questo titolo…' : `<b>Da controllare:</b> ${esc(w.check)}. Importato come “${esc(w.lbName || w.title)}”${w.lbYear ? ' (' + esc(w.lbYear) + ')' : ''}.`}</p>
+      ${w.pending ? '' : `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-act="replace">Cambia abbinamento</button><button class="btn" data-act="check-ok">Va bene così</button></div>`}</div>`;
+  }
 
-  if (es.length) {
-    h += `<div class="facts"><div class="fact"><b>${ratingText(Math.round(avg))}</b><span>il tuo voto</span></div>
-      <div class="fact"><b>${times}</b><span>${times === 1 ? 'volta' : 'volte'} ${w.type === 'book' ? 'letto' : 'finito'}</span></div>
+  if (es.length || w.seen || w.rating) {
+    h += `<div class="facts"><div class="fact"><b>${ratingText(Math.round(avg))}</b><span>${ctx.ro ? 'voto di ' + esc(ctx.name) : 'il tuo voto'}</span></div>
+      <div class="fact"><b>${times}</b><span>${times === 1 ? 'volta' : 'volte'} ${{ book: 'letto', game: 'finito', film: 'visto' }[w.type]}</span></div>
       <div class="fact"><b>${es.length}</b><span>${es.length === 1 ? 'voce' : 'voci'} nel diario</span></div></div>`;
-    h += `<h2>Il tuo diario</h2>` + es.map((e) => {
+    if (es.length) h += `<h2>${ctx.ro ? 'Il diario di ' + esc(ctx.name) : 'Il tuo diario'}</h2>`;
+    else h += `<p class="small muted">${w.type === 'book' ? 'Letto' : 'Visto'} senza data nel diario.</p>`;
+    h += es.map((e) => {
       const extra = [];
       if (e.format) extra.push(e.format);
       if (e.platform) extra.push(e.platform);
       if (e.hours) extra.push(`${e.hours} ore`);
       if (e.start && e.end && e.start !== e.end) extra.push(`dal ${fmtDate(e.start)}`);
       return `<article class="log">
-        <div class="head"><b>${e.status === 'in_corso' ? (e.start ? 'Iniziato il ' + fmtDate(e.start) : 'In corso') : fmtDate(entryDate(e))}</b>
-          <button class="linkish" data-act="edit-entry" data-id="${e.id}">Modifica</button></div>
+        <div class="head"><b>${e.status === 'in_corso' ? (e.start ? 'Iniziato il ' + fmtDate(e.start) : 'In corso') : entryDate(e) ? fmtDate(entryDate(e)) : 'Senza data'}</b>
+          ${ctx.ro ? '' : `<button class="linkish" data-act="edit-entry" data-id="${e.id}">Modifica</button>`}</div>
         <div class="meta" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${starsHTML(e.rating, '1.05rem')}${e.liked ? ICON.heartS : ''}${e.again ? ICON.again : ''}
           <span class="pill ${e.status === 'abbandonato' ? 'drop' : e.status === 'completato' ? 'full' : w.type}">${T.status[e.status] || e.status}</span>
           <span class="small muted">${esc(extra.join(' · '))}</span></div>
         ${e.review ? `<div class="review ${e.spoiler ? 'spoiler' : ''}" ${e.spoiler ? 'data-act="reveal" title="Contiene spoiler: tocca per leggere"' : ''}>${esc(e.review)}</div>` : ''}
-        ${e.tags && e.tags.length ? `<div class="chips">${e.tags.map((t) => `<a class="chip" href="#/diario?tag=${encodeURIComponent(t)}">#${esc(t)}</a>`).join('')}</div>` : ''}
+        ${e.tags && e.tags.length ? `<div class="chips">${e.tags.map((t) => ctx.ro ? `<span class="chip">#${esc(t)}</span>` : `<a class="chip" href="#/diario?tag=${encodeURIComponent(t)}">#${esc(t)}</a>`).join('')}</div>` : ''}
       </article>`;
     }).join('');
   }
@@ -381,10 +491,12 @@ function viewWork(r) {
   if (w.platforms && w.platforms.length) info.push(`<p><span class="muted small">Piattaforme</span><br>${esc(w.platforms.join(', '))}</p>`);
   if (w.genres && w.genres.length) info.push(`<p><span class="muted small">Generi</span><br>${esc(w.genres.join(', '))}</p>`);
   if (info.length) h += `<h2>Informazioni</h2><div class="note">${info.join('')}</div>`;
-  if (w.source && w.source !== 'manual') h += `<p class="small muted">Dati da ${{ gbooks: 'Google Books', openlibrary: 'Open Library', rawg: '<a href="https://rawg.io" target="_blank" rel="noopener">RAWG</a>' }[w.source] || ''}</p>`;
+  const src = { gbooks: 'Google Books', openlibrary: 'Open Library', goodreads: 'Goodreads', letterboxd: 'Letterboxd', igdb: '<a href="https://www.igdb.com" target="_blank" rel="noopener">IGDB</a>', tmdb: '<a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a>', rawg: '<a href="https://rawg.io" target="_blank" rel="noopener">RAWG</a>' }[w.source];
+  if (src) h += `<p class="small muted">Dati da ${src}</p>`;
+  if (!ctx.ro && r.name === 'opera' && !w.check && !w.pending) h += `<button class="linkish" data-act="replace">Collega a un altro risultato di ricerca</button>`;
   return h;
 }
-viewWork.after = () => { const w = curWork(); if (w && w.type === 'game') enrichGame(w); };
+viewWork.after = () => { const w = curWork(); if (w) enrichPreview(w); };
 
 /* ================= pannello: registra / modifica voce ================= */
 const sheet = $('#sheet');
@@ -396,6 +508,7 @@ function openSheet(title, body, onSubmit) {
 }
 function closeSheet() { if (sheet.open) sheet.close(); }
 sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
+sheet.addEventListener('close', () => { if (pendingRender) setTimeout(softRender, 0); });
 
 function starsInputHTML(v) {
   let s = '';
@@ -410,6 +523,10 @@ function setStars(el, v) {
   $('#ratingVal').textContent = ratingText(v);
 }
 
+function endLabel(type, status) {
+  if (status === 'abbandonato') return type === 'film' ? 'Interrotto il' : 'Abbandonato il';
+  return type === 'film' ? 'Visto il' : 'Finito il';
+}
 function openLog(w, entry) {
   const T = TYPE[w.type];
   const prevDone = db.entries.some((e) => e.workId === w.id && DONE(e) && (!entry || e.id !== entry.id));
@@ -418,17 +535,18 @@ function openLog(w, entry) {
   const allTags = [...new Set(db.entries.flatMap((x) => x.tags || []))].sort();
   const body = `
     <div style="display:grid;grid-template-columns:60px minmax(0,1fr);gap:12px;align-items:center">${coverHTML(w)}<div><b>${esc(w.title)}</b><div class="small muted">${esc([w.creator, w.year].filter(Boolean).join(' · '))}</div></div></div>
-    <div class="seg wrap" role="group" aria-label="Stato" id="status" data-val="${e.status}">${statusBtns}</div>
+    <div class="seg wrap" role="group" aria-label="Stato" id="status" data-val="${e.status}" data-type="${w.type}">${statusBtns}</div>
     <div class="row">
-      <label class="field"><span>Iniziato il</span><input type="date" id="f-start" value="${esc(e.start)}" max="${todayISO()}"></label>
-      <label class="field" id="endWrap" ${e.status === 'in_corso' ? 'hidden' : ''}><span id="endLbl">${e.status === 'abbandonato' ? 'Abbandonato il' : 'Finito il'}</span><input type="date" id="f-end" value="${esc(e.end)}" max="${todayISO()}"></label>
+      <label class="field" ${w.type === 'film' ? 'hidden' : ''}><span>Iniziato il</span><input type="date" id="f-start" value="${esc(e.start)}" max="${todayISO()}"></label>
+      <label class="field" id="endWrap" ${e.status === 'in_corso' ? 'hidden' : ''}><span id="endLbl">${endLabel(w.type, e.status)}</span><input type="date" id="f-end" value="${esc(e.end)}" max="${todayISO()}"></label>
     </div>
     <div class="field"><span>Voto</span>${starsInputHTML(e.rating)}</div>
     <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <button type="button" class="heart-btn" id="f-liked" data-act="toggle-press" aria-pressed="${!!e.liked}" aria-label="Mi piace">${ICON.heart}</button>
-      <label class="check"><input type="checkbox" id="f-again" ${e.again ? 'checked' : ''}> ${w.type === 'book' ? 'Riletto' : 'Rigiocato'}</label>
+      <label class="check"><input type="checkbox" id="f-again" ${e.again ? 'checked' : ''}> ${{ book: 'Riletto', game: 'Rigiocato', film: 'Rivisto' }[w.type]}</label>
     </div>
-    ${w.type === 'book' ? `<div class="row">
+    ${w.type === 'film' ? `<label class="field"><span>Dove</span><input type="text" id="f-where" list="wheres" value="${esc(e.where || '')}" placeholder="es. Cinema, Netflix"><datalist id="wheres">${['Cinema', 'Streaming', 'TV', 'Blu-ray / DVD', ...new Set(db.entries.map((x) => x.where).filter(Boolean))].map((x) => `<option value="${esc(x)}">`).join('')}</datalist></label>`
+    : w.type === 'book' ? `<div class="row">
       <label class="field"><span>Formato</span><select id="f-format"><option value="">—</option>${BOOK_FORMATS.map((f) => `<option ${e.format === f ? 'selected' : ''}>${f}</option>`).join('')}</select></label>
       <label class="field"><span>Pagine</span><input type="number" inputmode="numeric" min="0" id="f-pages" value="${esc(e.pages || '')}"></label></div>`
     : `<div class="row">
@@ -442,12 +560,14 @@ function openLog(w, entry) {
     const status = $('#status').dataset.val;
     const val = (id) => { const el = $('#' + id); return el ? el.value.trim() : ''; };
     const data = {
-      status, start: val('f-start'), end: status === 'in_corso' ? '' : val('f-end') || todayISO(),
+      status, start: val('f-start'), end: status === 'in_corso' ? '' : val('f-end') || (entry && entry.undated ? '' : todayISO()),
       rating: +$('#rating').dataset.val || 0, liked: $('#f-liked').getAttribute('aria-pressed') === 'true',
       again: $('#f-again').checked, review: val('f-review'), spoiler: $('#f-spoiler').checked,
       tags: [...new Set(val('f-tags').split(',').map((t) => t.trim().replace(/^#/, '')).filter(Boolean))],
     };
+    data.undated = !!(entry && entry.undated && !data.end && status !== 'in_corso');
     if (w.type === 'book') { data.format = val('f-format'); data.pages = +val('f-pages') || null; }
+    else if (w.type === 'film') { data.where = val('f-where'); }
     else { data.platform = val('f-platform'); data.hours = +String(val('f-hours')).replace(',', '.') || null; }
     if (data.start && data.end && data.start > data.end) { toast('La data di inizio è dopo quella di fine'); return false; }
     const ww = commitWork();
@@ -466,12 +586,13 @@ function openLog(w, entry) {
 function openWorkEditor(w, isNew) {
   const t = w.type;
   const body = `
-    ${isNew ? `<div class="seg" role="group" id="w-type" data-val="${t}"><button type="button" data-act="wtype" data-val="book" aria-pressed="${t === 'book'}">Libro</button><button type="button" data-act="wtype" data-val="game" aria-pressed="${t === 'game'}">Videogioco</button></div>` : ''}
+    ${isNew ? `<div class="seg" role="group" id="w-type" data-val="${t}">${[['book', 'Libro'], ['game', 'Gioco'], ['film', 'Film']].map(([k, l]) => `<button type="button" data-act="wtype" data-val="${k}" aria-pressed="${t === k}">${l}</button>`).join('')}</div>` : ''}
     <label class="field"><span>Titolo</span><input type="text" id="w-title" value="${esc(w.title)}" required></label>
     <label class="field"><span id="w-creator-lbl">${TYPE[t].creator}</span><input type="text" id="w-creator" value="${esc(w.creator)}"></label>
     <div class="row"><label class="field"><span>Anno</span><input type="number" inputmode="numeric" id="w-year" value="${esc(w.year)}"></label>
-      <label class="field" id="w-pages-wrap" ${t === 'game' ? 'hidden' : ''}><span>Pagine</span><input type="number" inputmode="numeric" id="w-pages" value="${esc(w.pages || '')}"></label></div>
-    <label class="field" id="w-plat-wrap" ${t === 'book' ? 'hidden' : ''}><span>Piattaforme (separate da virgola)</span><input type="text" id="w-platforms" value="${esc((w.platforms || []).join(', '))}"></label>
+      <label class="field" id="w-pages-wrap" ${t !== 'book' ? 'hidden' : ''}><span>Pagine</span><input type="number" inputmode="numeric" id="w-pages" value="${esc(w.pages || '')}"></label>
+      <label class="field" id="w-run-wrap" ${t !== 'film' ? 'hidden' : ''}><span>Durata (minuti)</span><input type="number" inputmode="numeric" id="w-runtime" value="${esc(w.runtime || '')}"></label></div>
+    <label class="field" id="w-plat-wrap" ${t !== 'game' ? 'hidden' : ''}><span>Piattaforme (separate da virgola)</span><input type="text" id="w-platforms" value="${esc((w.platforms || []).join(', '))}"></label>
     <label class="field"><span>Generi (separati da virgola)</span><input type="text" id="w-genres" value="${esc((w.genres || []).join(', '))}"></label>
     <div class="field"><span>Copertina</span>
       <div style="display:grid;grid-template-columns:80px minmax(0,1fr);gap:12px;align-items:start"><div id="w-cover-prev">${coverHTML(w)}</div>
@@ -491,6 +612,7 @@ function openWorkEditor(w, isNew) {
     const data = {
       type, title, creator: $('#w-creator').value.trim(), year: $('#w-year').value.trim(),
       pages: type === 'book' ? +$('#w-pages').value || null : null,
+      runtime: type === 'film' ? +$('#w-runtime').value || null : null,
       platforms: type === 'game' ? list('w-platforms') : [], genres: list('w-genres'),
       cover: sheet._upload || coverUrl || (removed ? '' : uploaded),
     };
@@ -516,7 +638,7 @@ function openWorkEditor(w, isNew) {
     } catch (e) { toast('Immagine non leggibile'); }
   });
 }
-function shrinkImage(file, maxH = 450) {
+function shrinkImage(file, maxH = 330) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
@@ -526,7 +648,7 @@ function shrinkImage(file, maxH = 450) {
       c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
       c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
       URL.revokeObjectURL(url);
-      resolve(c.toDataURL('image/jpeg', 0.8));
+      resolve(c.toDataURL('image/jpeg', 0.75));
     };
     img.onerror = reject;
     img.src = url;
@@ -557,7 +679,7 @@ function viewWish() {
   const ws = Object.values(db.works).filter((w) => w.wish && (f === 'all' || w.type === f)).sort((a, b) => (b.wishAdded || '').localeCompare(a.wishAdded || ''));
   let h = `<header class="top"><h1>Da fare</h1></header>${typeFilter('wishType', f)}`;
   if (!ws.length) return h + `<div class="empty"><p>Qui finiscono i libri da leggere e i giochi da giocare. Aprine uno e tocca il segnalibro.</p><a class="btn primary" href="#/cerca">${ICON.search} Cerca un titolo</a></div>`;
-  return h + `<p class="small muted">${ws.length} ${ws.length === 1 ? 'titolo' : 'titoli'}</p><div class="shelf wide">${ws.map((w) => `<a href="#/opera/${w.id}">${coverHTML(w)}<span class="cap">${esc(w.title)}</span></a>`).join('')}</div>`;
+  return h + `<p class="small muted">${ws.length} ${ws.length === 1 ? 'titolo' : 'titoli'}</p><div class="shelf wide">${ws.map((w) => `<a href="${ctx.link}${w.id}">${coverHTML(w)}<span class="cap">${esc(w.title)}</span></a>`).join('')}</div>`;
 }
 
 /* ================= LISTE ================= */
@@ -591,7 +713,7 @@ function viewList(r) {
     return h + l.items.map((id, i) => { const w = work(id); return `<div class="pick" style="grid-template-columns:40px minmax(0,1fr) auto">${coverHTML(w)}<span>${esc(w ? w.title : '?')}</span>
       <span style="display:flex;gap:4px"><button class="icon-btn" data-act="move" data-id="${l.id}" data-i="${i}" data-d="-1" aria-label="Su" ${i === 0 ? 'disabled' : ''}>↑</button><button class="icon-btn" data-act="move" data-id="${l.id}" data-i="${i}" data-d="1" aria-label="Giù" ${i === l.items.length - 1 ? 'disabled' : ''}>↓</button><button class="icon-btn" data-act="rm-item" data-id="${l.id}" data-i="${i}" aria-label="Togli">✕</button></span></div>`; }).join('');
   }
-  return h + `<div class="shelf wide">${l.items.map((id, i) => { const w = work(id); return w ? `<a href="#/opera/${w.id}">${coverHTML(w, 'm', l.ranked ? String(i + 1) : '')}<span class="cap">${esc(w.title)}</span></a>` : ''; }).join('')}</div>`;
+  return h + `<div class="shelf wide">${l.items.map((id, i) => { const w = work(id); return w ? `<a href="${ctx.link}${w.id}">${coverHTML(w, 'm', l.ranked ? String(i + 1) : '')}<span class="cap">${esc(w.title)}</span></a>` : ''; }).join('')}</div>`;
 }
 
 /* ================= PROFILO / STATISTICHE ================= */
@@ -605,121 +727,167 @@ function rankHTML(title, rows, unit = '') {
   return `<div><h2>${title}</h2><ul class="rank">${rows.map(([k, v]) => `<li><span>${esc(k)}</span><span>${v}${unit}</span></li>`).join('')}</ul></div>`;
 }
 function viewProfile() {
-  const finished = db.entries.filter(DONE);
-  const years = [...new Set(finished.map((e) => entryDate(e).slice(0, 4)))].sort().reverse();
+  const all = db.entries.filter((e) => DONE(e) && work(e.workId));
+  const dated = all.filter((e) => entryDate(e));
+  const years = [...new Set(dated.map((e) => entryDate(e).slice(0, 4)))].sort().reverse();
   const thisYear = String(new Date().getFullYear());
   if (!years.includes(thisYear)) years.unshift(thisYear);
   const y = ui.statsYear && (ui.statsYear === 'all' || years.includes(ui.statsYear)) ? ui.statsYear : thisYear;
-  const inY = (e) => y === 'all' || entryDate(e).startsWith(y);
-  const fe = finished.filter(inY);
-  const books = fe.filter((e) => work(e.workId)?.type === 'book');
-  const games = fe.filter((e) => work(e.workId)?.type === 'game');
+  const inY = (e) => (y === 'all' ? true : entryDate(e).startsWith(y));
+  const fe = all.filter(inY);
+  const of = (t) => fe.filter((e) => work(e.workId).type === t);
+  const books = of('book'), games = of('game'), films = of('film');
+  // "sempre": conta anche i titoli segnati come visti/letti senza data
+  const countType = (t) => {
+    if (y !== 'all') return of(t).length;
+    const ids = new Set(of(t).map((e) => e.workId));
+    Object.values(db.works).forEach((w) => { if (w.type === t && w.seen) ids.add(w.id); });
+    return ids.size;
+  };
   const pages = books.reduce((s, e) => s + (e.pages || work(e.workId).pages || 0), 0);
-  const hours = db.entries.filter((e) => inY(e) && work(e.workId)?.type === 'game').reduce((s, e) => s + (e.hours || 0), 0);
-  const rated = db.entries.filter((e) => inY(e) && e.rating);
-  const avg = rated.length ? rated.reduce((s, e) => s + e.rating, 0) / rated.length : 0;
+  const hours = db.entries.filter((e) => inY(e) && entryDate(e) && work(e.workId)?.type === 'game').reduce((s, e) => s + (e.hours || 0), 0);
+  const filmHours = films.reduce((s, e) => s + (work(e.workId).runtime || 0), 0) / 60;
+  // voti: in un anno quelli del diario; "sempre" uno per titolo (come Letterboxd)
+  let ratings;
+  if (y === 'all') {
+    const per = {};
+    Object.values(db.works).forEach((w) => { if (w.rating) per[w.id] = w.rating; });
+    db.entries.filter((e) => e.rating && work(e.workId)).sort((a, b) => entryDate(a).localeCompare(entryDate(b))).forEach((e) => { per[e.workId] = e.rating; });
+    ratings = Object.values(per);
+  } else ratings = db.entries.filter((e) => e.rating && entryDate(e) && inY(e) && work(e.workId)).map((e) => e.rating);
+  const avg = ratings.length ? ratings.reduce((s, v) => s + v, 0) / ratings.length : 0;
 
-  let h = `<header class="top"><h1>Il mio scaffale</h1><a class="icon-btn" href="#/impostazioni" aria-label="Impostazioni">${ICON.gear}</a></header>`;
+  let h = ctx.ro ? '' : `<header class="top"><h1>Il mio scaffale</h1><a class="icon-btn" href="#/impostazioni" aria-label="Impostazioni">${ICON.gear}</a></header>`;
 
-  // preferiti
-  ['book', 'game'].forEach((t) => {
+  TYPES.forEach((t) => {
     const favs = (db.favorites[t] || []).filter((id) => work(id));
-    h += `<h2>${t === 'book' ? 'Libri preferiti' : 'Giochi preferiti'}</h2><div class="shelf">`;
+    if (ctx.ro && !favs.length) return;
+    h += `<h2>${{ book: 'Libri preferiti', game: 'Giochi preferiti', film: 'Film preferiti' }[t]}</h2><div class="shelf">`;
     for (let i = 0; i < 4; i++) {
       const w = work(favs[i]);
-      h += w ? `<a href="#/opera/${w.id}">${coverHTML(w)}</a>` : `<button class="fav-slot" data-act="fav-pick" data-type="${t}" aria-label="Scegli un preferito">+</button>`;
+      h += w ? `<a href="${ctx.link}${w.id}">${coverHTML(w)}</a>` : ctx.ro ? '<div class="fav-slot" style="cursor:default"></div>' : `<button class="fav-slot" data-act="fav-pick" data-type="${t}" aria-label="Scegli un preferito">+</button>`;
     }
     h += '</div>';
   });
 
-  // anno
-  h += `<h2>Statistiche</h2><div class="seg wrap" role="group" aria-label="Anno">${years.map((yy) => `<button data-act="year" data-val="${yy}" aria-pressed="${y === yy}">${yy}</button>`).join('')}<button data-act="year" data-val="all" aria-pressed="${y === 'all'}">Sempre</button></div>`;
+  h += `<h2>Statistiche</h2><div class="seg wrap" role="group" aria-label="Anno">${years.slice(0, 6).map((yy) => `<button data-act="year" data-val="${yy}" aria-pressed="${y === yy}">${yy}</button>`).join('')}<button data-act="year" data-val="all" aria-pressed="${y === 'all'}">Sempre</button></div>`;
+  if (years.length > 6) h += `<select id="yearSel" class="small" style="margin-top:8px" aria-label="Altri anni"><option value="">Altri anni…</option>${years.slice(6).map((yy) => `<option ${y === yy ? 'selected' : ''}>${yy}</option>`).join('')}</select>`;
   h += `<div class="big-nums" style="margin-top:12px">
-    <div class="book"><b>${books.length}</b><span>libri letti</span></div>
-    <div class="game"><b>${games.length}</b><span>giochi finiti</span></div>
-    <div><b>${ratingText(Math.round(avg))}</b><span>voto medio</span></div>
+    <div class="book"><b>${fmtNum(countType('book'))}</b><span>libri letti</span></div>
+    <div class="game"><b>${fmtNum(countType('game'))}</b><span>giochi finiti</span></div>
+    <div class="film"><b>${fmtNum(countType('film'))}</b><span>film visti</span></div>
     <div><b>${fmtNum(pages)}</b><span>pagine lette</span></div>
     <div><b>${fmtNum(hours)}</b><span>ore di gioco</span></div>
-    <div><b>${fe.filter((e) => e.again).length}</b><span>riletti / rigiocati</span></div>
+    <div><b>${fmtNum(filmHours)}</b><span>ore di film</span></div>
+    <div><b>${ratingText(Math.round(avg))}</b><span>voto medio</span></div>
+    <div><b>${fmtNum(ratings.length)}</b><span>voti dati</span></div>
+    <div><b>${fmtNum(fe.filter((e) => e.again).length)}</b><span>riletti, rigiocati, rivisti</span></div>
   </div>`;
 
-  // grafico per mese o per anno
+  const segs = (list) => TYPES.map((t) => list.filter((e) => work(e.workId).type === t).length);
   let cols, labels;
   if (y === 'all') {
-    const ys = [...new Set(finished.map((e) => entryDate(e).slice(0, 4)))].sort();
-    cols = ys.map((yy) => [books.filter((e) => entryDate(e).startsWith(yy)).length, games.filter((e) => entryDate(e).startsWith(yy)).length]);
+    const ys = [...new Set(dated.map((e) => entryDate(e).slice(0, 4)))].sort();
+    cols = ys.map((yy) => segs(fe.filter((e) => entryDate(e).startsWith(yy))));
     labels = ys.map((yy) => "'" + yy.slice(2));
   } else {
-    cols = MONTHS.map((_, i) => { const p = `${y}-${pad(i + 1)}`; return [books.filter((e) => entryDate(e).startsWith(p)).length, games.filter((e) => entryDate(e).startsWith(p)).length]; });
+    cols = MONTHS.map((_, i) => segs(fe.filter((e) => entryDate(e).startsWith(`${y}-${pad(i + 1)}`))));
     labels = MONTHS.map((m) => m[0].toUpperCase());
   }
   if (cols.length) {
-    const max = Math.max(1, ...cols.map(([b, g]) => b + g));
-    h += `<h2>${y === 'all' ? 'Per anno' : 'Per mese'}</h2><div class="chart"><div class="bars">${cols.map(([b, g]) => `<div class="bar">
-      <div class="seg-b" style="height:${(b / max) * 85}%"></div><div class="seg-g" style="height:${(g / max) * 85}%"></div>${b + g ? `<div class="num">${b + g}</div>` : ''}</div>`).join('')}</div>
+    const max = Math.max(1, ...cols.map((c) => c[0] + c[1] + c[2]));
+    h += `<h2>${y === 'all' ? 'Per anno' : 'Per mese'}</h2><div class="chart"><div class="bars">${cols.map(([b, g, f]) => `<div class="bar">
+      <div class="seg-b" style="height:${(b / max) * 85}%"></div><div class="seg-g" style="height:${(g / max) * 85}%"></div><div class="seg-f" style="height:${(f / max) * 85}%"></div>${b + g + f ? `<div class="num">${b + g + f}</div>` : ''}</div>`).join('')}</div>
       <div class="bar-labels">${labels.map((l) => `<span>${l}</span>`).join('')}</div>
-      <div class="legend"><span><i style="background:var(--book)"></i>Libri</span><span><i style="background:var(--game)"></i>Giochi</span></div></div>`;
+      <div class="legend"><span><i style="background:var(--book)"></i>Libri</span><span><i style="background:var(--game)"></i>Giochi</span><span><i style="background:var(--film)"></i>Film</span></div></div>`;
   }
 
-  // distribuzione voti
-  if (rated.length) {
-    const dist = Array.from({ length: 10 }, (_, i) => rated.filter((e) => e.rating === i + 1).length);
+  if (ratings.length) {
+    const dist = Array.from({ length: 10 }, (_, i) => ratings.filter((v) => v === i + 1).length);
     const m = Math.max(1, ...dist);
-    h += `<h2>Voti dati <span class="muted small" style="text-transform:none;letter-spacing:0">${rated.length}</span></h2><div class="chart"><div class="bars" style="height:90px">${dist.map((c) => `<div class="bar"><div class="seg-r" style="height:${(c / m) * 80}%;min-height:${c ? 3 : 1}px;${c ? '' : 'opacity:.25'}"></div>${c ? `<div class="num">${c}</div>` : ''}</div>`).join('')}</div>
+    h += `<h2>Distribuzione dei voti</h2><div class="chart"><div class="bars" style="height:90px">${dist.map((c) => `<div class="bar"><div class="seg-r" style="height:${(c / m) * 80}%;min-height:${c ? 3 : 1}px;${c ? '' : 'opacity:.25'}"></div>${c ? `<div class="num">${c}</div>` : ''}</div>`).join('')}</div>
       <div class="bar-labels">${dist.map((_, i) => `<span>${i === 0 ? '½' : i === 9 ? '5★' : (i + 1) % 2 === 0 ? (i + 1) / 2 : ''}</span>`).join('')}</div></div>`;
   }
 
-  // classifiche
-  const authors = topCounts(books.flatMap((e) => (work(e.workId).creator || '').split(',').map((s) => s.trim())));
-  const plats = topCounts(db.entries.filter((e) => inY(e) && work(e.workId)?.type === 'game').map((e) => e.platform));
+  const people = (list) => topCounts(list.flatMap((e) => (work(e.workId).creator || '').split(',').map((s) => s.trim())));
+  const plats = topCounts(db.entries.filter((e) => inY(e) && entryDate(e) && work(e.workId)?.type === 'game').map((e) => e.platform));
   const genres = topCounts(fe.flatMap((e) => work(e.workId).genres || []));
-  const tags = topCounts(db.entries.filter(inY).flatMap((e) => e.tags || []));
+  const tags = topCounts(db.entries.filter((e) => entryDate(e) && inY(e)).flatMap((e) => e.tags || []));
   const formats = topCounts(books.map((e) => e.format));
-  h += `<div class="cols">${rankHTML('Autori più letti', authors)}${rankHTML('Piattaforme', plats)}${rankHTML('Generi', genres)}${rankHTML('Formati', formats)}${rankHTML('Tag', tags)}</div>`;
+  const where = topCounts(films.map((e) => e.where));
+  h += `<div class="cols">${rankHTML('Autori più letti', people(books))}${rankHTML('Registi più visti', people(films))}${rankHTML('Piattaforme', plats)}${rankHTML('Generi', genres)}${rankHTML('Formati dei libri', formats)}${rankHTML('Dove guardi i film', where)}${rankHTML('Tag', tags)}</div>`;
 
-  // migliori dell'anno
-  const best = fe.filter((e) => e.rating >= 8 || e.liked).sort((a, b) => (b.rating || 0) - (a.rating || 0)).slice(0, 8);
-  if (best.length) h += `<h2>I migliori ${y === 'all' ? 'di sempre' : 'del ' + y}</h2><div class="shelf">${best.map((e) => { const w = work(e.workId); return `<a href="#/opera/${w.id}">${coverHTML(w)}<span class="cap">${starsHTML(e.rating)}</span></a>`; }).join('')}</div>`;
+  const seenBest = new Set();
+  const best = fe.filter((e) => e.rating >= 9 || (e.rating >= 8 && e.liked)).sort((a, b) => (b.rating || 0) - (a.rating || 0) || (b.liked ? 1 : 0) - (a.liked ? 1 : 0))
+    .filter((e) => !seenBest.has(e.workId) && seenBest.add(e.workId)).slice(0, 12);
+  if (best.length) h += `<h2>I migliori ${y === 'all' ? 'di sempre' : 'del ' + y}</h2><div class="shelf">${best.map((e) => { const w = work(e.workId); return `<a href="${ctx.link}${w.id}">${coverHTML(w)}<span class="cap">${starsHTML(e.rating)}</span></a>`; }).join('')}</div>`;
 
-  if (!finished.length) h += `<div class="empty"><p>Le statistiche si riempiono man mano che registri libri e giochi finiti.</p></div>`;
+  if (!all.length && !ctx.ro) h += `<div class="empty"><p>Le statistiche si riempiono man mano che registri libri, giochi e film.</p></div>`;
   return h;
 }
 function openFavPicker(type) {
-  const done = [...new Set(db.entries.filter((e) => work(e.workId)?.type === type).map((e) => e.workId))];
-  const pool = (done.length ? done : Object.values(db.works).filter((w) => w.type === type).map((w) => w.id))
-    .filter((id) => !(db.favorites[type] || []).includes(id)).map(work).sort((a, b) => a.title.localeCompare(b.title));
+  const seen = new Set(db.entries.filter((e) => work(e.workId)?.type === type).map((e) => e.workId));
+  Object.values(db.works).forEach((w) => { if (w.type === type && (w.seen || w.rating)) seen.add(w.id); });
+  const pool = (seen.size ? [...seen].map(work) : Object.values(db.works).filter((w) => w.type === type))
+    .filter((w) => !(db.favorites[type] || []).includes(w.id)).sort((a, b) => (b.liked ? 1 : 0) - (a.liked ? 1 : 0) || (b.rating || 0) - (a.rating || 0) || a.title.localeCompare(b.title));
+  const row = (w) => `<button type="button" class="pick" data-act="fav-set" data-id="${w.id}">${coverHTML(w)}<span>${esc(w.title)}<br><span class="small muted">${esc([w.creator, w.year].filter(Boolean).join(' · '))}</span></span></button>`;
+  const label = { book: 'libro', game: 'gioco', film: 'film' }[type];
   const body = pool.length
-    ? `<input type="search" id="favq" placeholder="Filtra" autocomplete="off"><div id="favlist">${pool.map((w) => `<button type="button" class="pick" data-act="fav-set" data-id="${w.id}" data-t="${esc(w.title.toLowerCase())}">${coverHTML(w)}<span>${esc(w.title)}<br><span class="small muted">${esc(w.creator || '')}</span></span></button>`).join('')}</div>`
-    : `<p class="muted" style="margin:0">Registra prima qualche ${type === 'book' ? 'libro' : 'gioco'} nel diario.</p>`;
-  openSheet(type === 'book' ? 'Scegli un libro preferito' : 'Scegli un gioco preferito', body);
+    ? `<input type="search" id="favq" placeholder="Cerca tra i tuoi titoli" autocomplete="off"><div id="favlist">${pool.slice(0, 60).map(row).join('')}</div>`
+    : `<p class="muted" style="margin:0">Registra prima qualche ${label} nel diario.</p>`;
+  openSheet(`Scegli un ${label} preferito`, body);
   const q = $('#favq');
-  if (q) q.addEventListener('input', () => { const v = q.value.toLowerCase(); $$('#favlist .pick').forEach((b) => { b.hidden = !b.dataset.t.includes(v); }); });
+  if (q) q.addEventListener('input', () => { const v = norm(q.value); $('#favlist').innerHTML = pool.filter((w) => !v || norm(w.title + ' ' + (w.origTitle || '') + ' ' + (w.creator || '')).includes(v)).slice(0, 60).map(row).join(''); });
+}
+
+/* ================= DA CONTROLLARE ================= */
+function viewCheck() {
+  const ws = Object.values(db.works).filter((w) => w.check).sort((a, b) => a.title.localeCompare(b.title));
+  let h = `<header class="top"><button class="icon-btn" data-act="back" aria-label="Indietro">${ICON.back}</button><h1>Da controllare</h1></header>`;
+  if (!ws.length) return h + '<div class="empty"><p>Niente da controllare.</p></div>';
+  h += `<p class="small muted">Titoli importati per cui l'abbinamento automatico potrebbe essere sbagliato. Aprili e scegli “Cambia abbinamento” o “Va bene così”.</p>`;
+  return h + ws.map((w) => `<a class="pick" href="#/opera/${w.id}" style="text-decoration:none">${coverHTML(w)}<span><b>${esc(w.title)}</b> ${w.year ? '(' + esc(w.year) + ')' : ''}<br><span class="small muted">Importato come “${esc(w.lbName || w.title)}”${w.lbYear ? ' (' + esc(w.lbYear) + ')' : ''} · ${esc(w.check)}</span></span></a>`).join('');
 }
 
 /* ================= IMPOSTAZIONI ================= */
 function viewSettings() {
   const nW = Object.keys(db.works).length;
-  let size = 0;
-  try { size = (localStorage.getItem(KEY) || '').length; } catch (e) { /* */ }
+  const size = JSON.stringify(db).length;
+  const toCheck = Object.values(db.works).filter((w) => w.check).length;
   return `<header class="top"><button class="icon-btn" data-act="back" aria-label="Indietro">${ICON.back}</button><h1>Impostazioni</h1></header>
-  <h2>Chiave RAWG (videogiochi)</h2>
-  <form class="searchbar" data-form="rawg" style="margin:0"><input id="rawgKey" type="text" autocomplete="off" placeholder="Incolla la chiave" value="${esc(db.settings.rawgKey)}"><button class="btn primary">Salva</button></form>
-  <p class="small muted">La ottieni gratis su <a href="https://rawg.io/apidocs" target="_blank" rel="noopener">rawg.io/apidocs</a>. Resta salvata solo su questo dispositivo.</p>
+  ${accountHTML()}
+
+  <h2>Importa</h2>
+  <div class="note">
+    <p class="small"><b>Letterboxd</b>: dal sito vai su Settings → Data → Export your data e carica qui lo zip così com'è. Puoi rifarlo quando vuoi: aggiunge solo le novità.</p>
+    <label class="btn" style="cursor:pointer;justify-self:start">Importa da Letterboxd<input type="file" accept=".zip,application/zip" id="lbFile" hidden></label>
+    <p class="small"><b>Goodreads</b>: dal sito (da computer) vai su My Books → Import and export → Export Library e carica qui il file .csv.</p>
+    <label class="btn" style="cursor:pointer;justify-self:start">Importa da Goodreads<input type="file" accept=".csv,text/csv" id="grFile" hidden></label>
+    ${matchStatusHTML()}
+    ${toCheck ? `<a class="btn" href="#/controlla" style="justify-self:start">Titoli da controllare (${toCheck})</a>` : ''}
+  </div>
+
+  <h2>Ricerca di film e giochi</h2>
+  <p class="small ${appConfig.ponte ? 'muted' : ''}">${appConfig.ponte ? 'Ponte collegato: ' + esc(appConfig.ponte) : 'Il ponte non è configurato: la ricerca di film e giochi non funziona finché non scrivi il suo indirizzo in config.txt su GitHub.'}</p>
 
   <h2>Backup</h2>
-  <div class="note"><p class="small">I tuoi dati sono salvati solo in questo browser: ${nW} titoli, ${db.entries.length} voci, ${db.lists.length} liste (${Math.ceil(size / 1024)} KB). Esporta un backup ogni tanto e conservalo, per esempio su Drive o via email. Ti serve anche per spostare tutto su un altro telefono.</p>
+  <div class="note"><p class="small">I tuoi dati sono salvati su questo telefono${cloud.status === 'in' ? ' e online' : ''}: ${fmtNum(nW)} titoli, ${fmtNum(db.entries.length)} voci, ${db.lists.length} liste (${fmtNum(size / 1024)} KB). Esporta un backup ogni tanto e conservalo, per esempio su Drive o via email.</p>
     <button class="btn primary" data-act="export">Esporta backup</button>
     <label class="btn" style="cursor:pointer">Importa backup<input type="file" accept="application/json,.json" id="importFile" hidden></label></div>
 
   <h2>Installazione</h2>
-  <div class="note"><p class="small"><b>iPhone</b>: apri questo sito con Safari, tocca Condividi e poi “Aggiungi alla schermata Home”.<br><b>Android</b>: apri con Chrome, menu ⋮ e poi “Installa app” o “Aggiungi a schermata Home”.<br>Così si apre a schermo intero come un'app e il browser non cancella i dati.</p></div>
+  <div class="note"><p class="small"><b>iPhone</b>: apri questo sito con Safari, tocca Condividi e poi “Aggiungi alla schermata Home”.<br><b>Android</b>: apri con Chrome, menu ⋮ e poi “Installa app” o “Aggiungi a schermata Home”.</p></div>
 
   <h2>Zona pericolosa</h2>
-  <button class="btn danger" data-act="wipe">Cancella tutti i dati</button>
+  <button class="btn danger" data-act="wipe">Cancella tutti i dati${cloud.status === 'in' ? ' (anche online)' : ''}</button>
 
-  <p class="small muted" style="margin-top:28px">Dati dei libri: Google Books e <a href="https://openlibrary.org" target="_blank" rel="noopener">Open Library</a>. Dati dei giochi: <a href="https://rawg.io" target="_blank" rel="noopener">RAWG</a>.</p>`;
+  <p class="small muted" style="margin-top:28px">Libri: Google Books e <a href="https://openlibrary.org" target="_blank" rel="noopener">Open Library</a>. Giochi: <a href="https://www.igdb.com" target="_blank" rel="noopener">IGDB</a>. Film: dati e locandine da <a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a>; questa app usa le API di TMDB ma non è approvata né certificata da TMDB.</p>`;
 }
 viewSettings.after = () => {
+  const lb = $('#lbFile');
+  if (lb) lb.addEventListener('change', () => { const f = lb.files[0]; lb.value = ''; if (f) prepareLetterboxd(f); });
+  const gr = $('#grFile');
+  if (gr) gr.addEventListener('change', () => { const f = gr.files[0]; gr.value = ''; if (f) prepareGoodreads(f); });
   const f = $('#importFile');
   if (f) f.addEventListener('change', async () => {
     const file = f.files[0];
@@ -728,8 +896,7 @@ viewSettings.after = () => {
       const d = JSON.parse(await file.text());
       if (!d || typeof d.works !== 'object' || !Array.isArray(d.entries)) throw new Error();
       if (!confirm(`Il backup contiene ${Object.keys(d.works).length} titoli e ${d.entries.length} voci. Sostituisce i dati attuali. Continuare?`)) return;
-      const base = emptyDB();
-      db = { ...base, ...d, favorites: { ...base.favorites, ...(d.favorites || {}) }, settings: { ...base.settings, ...(d.settings || {}) } };
+      db = normDB(d);
       save(); toast('Backup importato'); render();
     } catch (e) { toast('Questo file non è un backup di Scaffale'); }
     f.value = '';
@@ -761,12 +928,23 @@ document.addEventListener('click', (ev) => {
     case 'stype': ui.searchType = search.type = el.dataset.val; saveUI(); search.results = null; search.error = ''; render(); if (search.q) runSearch(search.q); break;
     case 'pick': {
       const r = search.results[+el.dataset.i];
+      if (search.replace && work(search.replace)) { pickReplacement(work(search.replace), r); break; }
       const have = findBySource(r.source, r.sourceId);
       if (have) { go(`#/opera/${have.id}`); break; }
       preview = { ...r };
       go('#/anteprima');
       break;
     }
+    case 'replace': {
+      const x = curWork(); if (!x) break;
+      search.replace = x.id; search.type = x.type; search.q = x.lbName || x.title; search.results = null; search.error = '';
+      go('#/cerca');
+      if (x.type === 'book' || appConfig.ponte) runSearch(search.q);
+      break;
+    }
+    case 'cancel-replace': { const id = search.replace; search.replace = null; go(`#/opera/${id}`); break; }
+    case 'check-ok': { const x = curWork(); delete x.check; save(); render(); toast('Segnato come corretto'); break; }
+    case 'more': ui.diaryLimit = (ui.diaryLimit || 200) + 300; render(); break;
     case 'manual': openWorkEditor({ type: search.type, title: search.q || '', creator: '', year: '', pages: null, platforms: [], genres: [], cover: '' }, true); break;
     case 'like': { const x = commitWork(); x.liked = !x.liked; save(); render(); break; }
     case 'wish': { const x = commitWork(); x.wish = !x.wish; if (x.wish) x.wishAdded = new Date().toISOString(); save(); render(); toast(x.wish ? `Aggiunto a “${TYPE[x.type].wish}”` : 'Tolto dalla lista'); break; }
@@ -791,7 +969,7 @@ document.addEventListener('click', (ev) => {
       delete db.works[x.id];
       db.entries = db.entries.filter((e) => e.workId !== x.id);
       db.lists.forEach((l) => { l.items = l.items.filter((id) => id !== x.id); });
-      ['book', 'game'].forEach((t) => { db.favorites[t] = (db.favorites[t] || []).filter((id) => id !== x.id); });
+      TYPES.forEach((t) => { db.favorites[t] = (db.favorites[t] || []).filter((id) => id !== x.id); });
       save(); closeSheet(); go('#/diario', true); toast('Eliminato');
       break;
     }
@@ -799,14 +977,14 @@ document.addEventListener('click', (ev) => {
     case 'wtype': {
       const t = el.dataset.val; const g = $('#w-type'); g.dataset.val = t;
       $$('button', g).forEach((b) => b.setAttribute('aria-pressed', b.dataset.val === t));
-      $('#w-creator-lbl').textContent = TYPE[t].creator; $('#w-pages-wrap').hidden = t === 'game'; $('#w-plat-wrap').hidden = t === 'book';
+      $('#w-creator-lbl').textContent = TYPE[t].creator; $('#w-pages-wrap').hidden = t !== 'book'; $('#w-run-wrap').hidden = t !== 'film'; $('#w-plat-wrap').hidden = t !== 'game';
       break;
     }
     case 'status': {
       const g = $('#status'); g.dataset.val = el.dataset.val;
       $$('button', g).forEach((b) => b.setAttribute('aria-pressed', b === el));
       $('#endWrap').hidden = el.dataset.val === 'in_corso';
-      $('#endLbl').textContent = el.dataset.val === 'abbandonato' ? 'Abbandonato il' : 'Finito il';
+      $('#endLbl').textContent = endLabel(g.dataset.type, el.dataset.val);
       if (el.dataset.val !== 'in_corso' && !$('#f-end').value) $('#f-end').value = todayISO();
       break;
     }
@@ -831,9 +1009,33 @@ document.addEventListener('click', (ev) => {
       save(); closeSheet(); render(); break;
     }
     case 'export': exportBackup(); break;
+    case 'do-import': doImport(); break;
+    case 'gr-shelves': { const g = $('#grShelves'); g.dataset.val = el.dataset.val; $$('button', g).forEach((b) => b.setAttribute('aria-pressed', b === el)); break; }
+    case 'match-retry': matcher.paused = ''; runMatcher(); break;
+    case 'login': ev.preventDefault(); doAuth('login'); break;
+    case 'signup': doAuth('signup'); break;
+    case 'reset-pass': doAuth('reset'); break;
+    case 'logout': if (confirm('Uscire dall\'account? I dati restano su questo telefono.')) cloud.A.signOut(cloud.auth); break;
+    case 'refresh-friends': loadFriends(true); toast('Aggiorno…'); break;
+    case 'unfriend': if (confirm('Scollegarvi? Non vi vedrete più a vicenda.')) removeFriend(el.dataset.id); break;
+    case 'copy-code': {
+      const c = fmtCode(cloud.me && cloud.me.code);
+      const done = () => toast('Codice copiato');
+      if (navigator.clipboard) navigator.clipboard.writeText(c).then(done, () => toast(c)); else toast(c);
+      break;
+    }
+    case 'copy-friend': {
+      const r = parseHash(); const f = friends[r.parts[1]]; const fw = f && f.db.works[r.parts[3]];
+      if (!fw) break;
+      preview = { ...fw, sourceName: '' };
+      ['id', 'wish', 'liked', 'added', 'wishAdded'].forEach((k) => delete preview[k]);
+      if (preview.source === 'manual') preview.sourceId = uid();
+      go('#/anteprima');
+      break;
+    }
     case 'wipe':
       if (confirm('Cancellare davvero tutto? Senza un backup non si può tornare indietro.') && confirm('Ultima conferma: cancello tutti i dati?')) {
-        const key = db.settings.rawgKey; db = emptyDB(); db.settings.rawgKey = key; save(); go('#/diario'); toast('Dati cancellati');
+        db = emptyDB(); save(); go('#/diario'); toast('Dati cancellati');
       }
       break;
   }
@@ -865,16 +1067,17 @@ document.addEventListener('submit', (ev) => {
   if (!f) return;
   ev.preventDefault();
   const kind = f.dataset.form;
+  if (kind === 'login') doAuth('login');
+  if (kind === 'friend') { addFriend($('#friendCode').value); }
+  if (kind === 'name') { saveName($('#myName').value); $('#myName').blur(); }
   if (kind === 'search') { clearTimeout(searchTimer); runSearch($('#q').value); $('#q').blur(); }
-  if (kind === 'rawg') {
-    db.settings.rawgKey = $('#rawgKey').value.trim(); save();
-    toast(db.settings.rawgKey ? 'Chiave salvata' : 'Chiave rimossa');
-    render();
-  }
   if (kind === 'sheet') {
     const ok = sheet._submit ? sheet._submit() : true;
     if (ok !== false) closeSheet();
   }
+});
+document.addEventListener('change', (ev) => {
+  if (ev.target.id === 'yearSel' && ev.target.value) { ui.statsYear = ev.target.value; saveUI(); render(); }
 });
 document.addEventListener('input', (ev) => {
   if (ev.target.id === 'q') {
@@ -884,4 +1087,10 @@ document.addEventListener('input', (ev) => {
   }
 });
 
-render();
+(async () => {
+  db = await loadDB();
+  await loadAppConfig();
+  render();
+  initCloud();
+  runMatcher();
+})();
