@@ -227,10 +227,9 @@ function applyGoodreads(rows, shelvesAs) {
       w.seen = true; w.wish = false;
       if (rating) w.rating = rating;
       if (+r['Read Count'] > 1) w.readCount = +r['Read Count'];
-      if (end || review || tags.length) {
-        db.entries.push({ id: uid(), workId: w.id, status: 'finito', start: '', end, undated: !end, rating, liked: false, again: false, review, spoiler: r.Spoiler === 'true', tags, grKey: key, created: (date(r['Date Added']) || todayISO()) + 'T12:00:00Z' });
-        stats.entries++;
-      }
+      // ogni libro letto ha la sua voce di diario; senza data di lettura resta "senza data" e la si può completare
+      db.entries.push({ id: uid(), workId: w.id, status: 'finito', start: '', end, undated: !end, rating, liked: false, again: false, review, spoiler: r.Spoiler === 'true', tags, grKey: key, created: (date(r['Date Added']) || todayISO()) + 'T12:00:00Z' });
+      stats.entries++;
     }
   });
   return stats;

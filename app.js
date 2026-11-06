@@ -82,6 +82,18 @@ const IDB = {
   async get(k) { const d = await this.open(); return new Promise((res, rej) => { const q = d.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); },
   async set(k, v) { const d = await this.open(); return new Promise((res, rej) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); },
 };
+// correzioni ai dati importati con versioni precedenti dell'app
+function migrateDB() {
+  let changed = false;
+  const has = new Set(db.entries.map((e) => e.workId));
+  Object.values(db.works).forEach((w) => {
+    if (w.grId && w.seen && !has.has(w.id)) {
+      db.entries.push({ id: 'gr' + w.id, workId: w.id, status: 'finito', start: '', end: '', undated: true, rating: w.rating || 0, liked: false, again: false, review: '', spoiler: false, tags: [], grKey: w.grId + '|read|', created: (w.added || new Date().toISOString()) });
+      changed = true;
+    }
+  });
+  return changed;
+}
 async function loadDB() {
   try { const raw = await IDB.get('db'); if (raw) return normDB(JSON.parse(raw)); } catch (e) { /* riserva sotto */ }
   try { const raw = localStorage.getItem(KEY); if (raw) { const d = normDB(JSON.parse(raw)); persistNow(d); return d; } } catch (e) { /* */ }
@@ -164,6 +176,18 @@ function typeFilter(key, val) {
     ${[['all', 'Tutto'], ['book', 'Libri'], ['game', 'Giochi'], ['film', 'Film']].map(([k, l]) => `<button data-act="filter" data-key="${key}" data-val="${k}" aria-pressed="${val === k}">${l}</button>`).join('')}
   </div>`;
 }
+// voci senza data (es. libri letti su Goodreads senza "Date Read"): in fondo al diario, a richiesta
+function undatedHTML(ok) {
+  const und = db.entries.filter((e) => e.status !== 'in_corso' && !entryDate(e) && ok(e));
+  if (!und.length) return '';
+  let h = `<div class="month">Senza data<small>${fmtNum(und.length)} ${und.length === 1 ? 'voce' : 'voci'}</small></div>`;
+  if (!ui.showUndated) return h + `<p class="small muted">Titoli segnati come letti o visti senza una data. Apri una voce e tocca “Modifica” per aggiungerla.</p><button class="btn block" data-act="show-undated">Mostra</button>`;
+  return h + und.sort((x, y) => (work(x.workId).title || '').localeCompare(work(y.workId).title || '')).map((e) => {
+    const w = work(e.workId);
+    return `<a class="entry" href="${ctx.link}${w.id}"><div class="day">–</div>${coverHTML(w)}
+      <div style="min-width:0"><div class="t">${esc(w.title)}</div><div class="meta">${starsHTML(e.rating)}${e.liked ? ICON.heartS : ''}${e.review ? ICON.text : ''}<span>${esc(w.year || '')}</span></div></div></a>`;
+  }).join('') + `<button class="btn block" style="margin-top:12px" data-act="show-undated">Nascondi</button>`;
+}
 function viewDiary(r) {
   const f = ui.diaryType || 'all';
   const tag = r.q.tag;
@@ -178,7 +202,7 @@ function viewDiary(r) {
   if (current.length) {
     h += `<h2>In corso</h2><div class="strip">${current.map((e) => { const w = work(e.workId); return `<a href="${ctx.link}${w.id}">${coverHTML(w)}<span class="cap">${esc(w.title)}</span></a>`; }).join('')}</div>`;
   }
-  if (!done.length && !current.length) {
+  if (!done.length && !current.length && !db.entries.some((e) => e.status !== 'in_corso' && !entryDate(e) && ok(e))) {
     if (ctx.ro) return h + '<div class="empty"><p>Ancora nessuna voce.</p></div>';
     h += `<div class="empty"><p>${tag ? 'Nessuna voce con questo tag.' : 'Il diario è vuoto. Cerca un libro o un gioco che hai finito e registralo con data e voto.'}</p><a class="btn primary" href="#/cerca">${ICON.search} Cerca un titolo</a></div>`;
     return h;
@@ -208,6 +232,7 @@ function viewDiary(r) {
       </div></a>`;
   });
   if (done.length > limit) h += `<button class="btn block" style="margin-top:16px" data-act="more">Mostra altre voci (${fmtNum(done.length - limit)})</button>`;
+  h += undatedHTML(ok);
   return h;
 }
 
@@ -944,6 +969,7 @@ document.addEventListener('click', (ev) => {
     }
     case 'cancel-replace': { const id = search.replace; search.replace = null; go(`#/opera/${id}`); break; }
     case 'check-ok': { const x = curWork(); delete x.check; save(); render(); toast('Segnato come corretto'); break; }
+    case 'show-undated': ui.showUndated = !ui.showUndated; saveUI(); render(); break;
     case 'more': ui.diaryLimit = (ui.diaryLimit || 200) + 300; render(); break;
     case 'manual': openWorkEditor({ type: search.type, title: search.q || '', creator: '', year: '', pages: null, platforms: [], genres: [], cover: '' }, true); break;
     case 'like': { const x = commitWork(); x.liked = !x.liked; save(); render(); break; }
@@ -1089,6 +1115,7 @@ document.addEventListener('input', (ev) => {
 
 (async () => {
   db = await loadDB();
+  if (migrateDB()) save();
   await loadAppConfig();
   render();
   initCloud();
