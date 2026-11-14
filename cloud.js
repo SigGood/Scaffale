@@ -440,7 +440,7 @@ function viewFriend(r) {
         <div class="seg wrap" role="group">${tabs.map(([k, l]) => `<a class="segl" href="#/amico/${fid}?tab=${k}" aria-pressed="${tab === k}">${l}</a>`).join('')}</div><div style="height:12px"></div>`;
       if (tab === 'stats') h += viewProfile();
       else if (tab === 'liste') {
-        h += db.lists.length ? db.lists.map((l) => `<h2>${esc(l.name)} <span class="muted small" style="text-transform:none;letter-spacing:0">${l.items.length}</span></h2>${l.description ? `<p class="small muted">${esc(l.description)}</p>` : ''}<div class="shelf">${l.items.map((id, i) => { const w = work(id); return w ? `<a href="${ctx.link}${w.id}">${coverHTML(w, 'm', l.ranked ? String(i + 1) : '')}</a>` : ''; }).join('')}</div>`).join('') : '<div class="empty"><p>Nessuna lista.</p></div>';
+        h += db.lists.length ? db.lists.map((l) => `<h2>${esc(l.name)} <span class="muted small" style="text-transform:none;letter-spacing:0">${l.items.length}</span></h2>${l.description ? `<p class="small muted">${esc(l.description)}</p>` : ''}<div class="shelf">${l.items.map((id, i) => { const w = work(id); return w ? `<a href="${ctx.link}${w.id}">${coverHTML(w, 'm', l.ranked ? String(i + 1) : '')}${myRating(id) ? `<span class="cap">${starsHTML(myRating(id))}</span>` : ''}</a>` : ''; }).join('')}</div>`).join('') : '<div class="empty"><p>Nessuna lista.</p></div>';
       } else if (tab === 'dafare') {
         const ws = Object.values(db.works).filter((w) => w.wish);
         h += ws.length ? `<div class="shelf wide">${ws.map((w) => `<a href="${ctx.link}${w.id}">${coverHTML(w)}<span class="cap">${esc(w.title)}</span></a>`).join('')}</div>` : '<div class="empty"><p>Lista vuota.</p></div>';

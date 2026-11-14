@@ -374,3 +374,20 @@ dialog#sheet[open] { animation: up .22s ease-out; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* righe delle liste (classifiche e riordino) */
+.lrows { display: grid; }
+.lrow { display: grid; grid-template-columns: 34px 46px minmax(0, 1fr); gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); text-decoration: none; color: inherit; }
+.lrow:first-child { border-top: 0; }
+.lrow .num { font: 800 1.35rem var(--font-display); text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+.lrow .t { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .82rem; color: var(--muted); margin-top: 2px; }
+.lrow .meta span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lrow .cover.ph { font-size: .5rem; padding: 6%; }
+.lrow.edit { grid-template-columns: 30px 40px 46px minmax(0, 1fr) auto; background: var(--bg); }
+.lrow.edit:not(:has(.pos)) { grid-template-columns: 30px 46px minmax(0, 1fr) auto; }
+.lrow .drag { font-size: 1.5rem; color: var(--muted); text-align: center; touch-action: none; cursor: grab; user-select: none; padding: 10px 0; }
+.lrow .pos { font: 800 1.1rem var(--font-display); color: var(--accent); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; height: 38px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.lrow.dragging { opacity: .85; box-shadow: 0 6px 18px rgb(0 0 0 / .35); border-radius: 10px; position: relative; z-index: 2; }
+.lpick { display: grid; gap: 6px; }
+.lpos select { width: 100%; }
