@@ -188,12 +188,53 @@ function undatedHTML(ok) {
       <div style="min-width:0"><div class="t">${esc(w.title)}</div><div class="meta">${starsHTML(e.rating)}${e.liked ? ICON.heartS : ''}${e.review ? ICON.text : ''}<span>${esc(w.year || '')}</span></div></div></a>`;
   }).join('') + `<button class="btn block" style="margin-top:12px" data-act="show-undated">Nascondi</button>`;
 }
+// ordine del diario: non viene salvato, a ogni apertura dell'app si riparte da "Data"
+let diarySort = 'data';
+const DIARY_SORTS = [['data', 'Data'], ['voto', 'Il mio voto'], ['titolo', 'Titolo (A–Z)'], ['anno', 'Anno di uscita'], ['preferiti', 'Preferiti prima']];
+function sortSelectHTML() {
+  return `<label class="sortsel"><span>Ordina per</span><select id="diarySort">${DIARY_SORTS.map(([k, l]) => `<option value="${k}"${diarySort === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>`;
+}
+function entryRowHTML(e, w, left, extra = '') {
+  const badges = [];
+  if (e.status === 'abbandonato') badges.push('<span class="pill drop">Abbandonato</span>');
+  if (e.status === 'completato') badges.push('<span class="pill full">100%</span>');
+  return `<a class="entry${left === null ? ' noday' : ''}" href="${ctx.link}${w.id}">
+      ${left === null ? '' : `<div class="day">${left}</div>`}
+      ${coverHTML(w)}
+      <div style="min-width:0"><div class="t">${esc(w.title)}</div>
+        <div class="meta">${starsHTML(e.rating)}${e.liked ? ICON.heartS : ''}${e.again ? ICON.again : ''}${e.review ? ICON.text : ''}${badges.join('')}<span>${esc(w.year || '')}</span>${extra}</div>
+      </div></a>`;
+}
+const byDateDesc = (a, b) => (entryDate(b) || '').localeCompare(entryDate(a) || '') || (b.created || '').localeCompare(a.created || '');
+const byTitle = (a, b) => (work(a.workId).title || '').localeCompare(work(b.workId).title || '', 'it', { sensitivity: 'base', numeric: true });
+// voci finite (con o senza data) ordinate e divise in gruppi, per gli ordini diversi da "Data"
+function sortedGroups(list) {
+  const year = (e) => parseInt(work(e.workId).year, 10) || 0;
+  const starsLabel = (v) => (v ? `${(v / 2).toLocaleString('it-IT')} ${v === 2 ? 'stella' : 'stelle'}` : 'Senza voto');
+  let sorted, label;
+  if (diarySort === 'voto') {
+    sorted = list.sort((a, b) => (b.rating || 0) - (a.rating || 0) || byDateDesc(a, b));
+    label = (e) => starsLabel(e.rating || 0);
+  } else if (diarySort === 'titolo') {
+    sorted = list.sort((a, b) => byTitle(a, b) || byDateDesc(a, b));
+    label = (e) => { const c = (work(e.workId).title || '').trim().charAt(0).toLocaleUpperCase('it-IT'); return /\p{L}/u.test(c) ? c.normalize('NFD').charAt(0) : '#'; };
+  } else if (diarySort === 'anno') {
+    sorted = list.sort((a, b) => year(b) - year(a) || byTitle(a, b));
+    label = (e) => (year(e) ? String(year(e)) : 'Anno sconosciuto');
+  } else {
+    sorted = list.sort((a, b) => (b.liked ? 1 : 0) - (a.liked ? 1 : 0) || byDateDesc(a, b));
+    label = (e) => (e.liked ? 'Preferiti' : 'Altri');
+  }
+  return { sorted, label };
+}
 function viewDiary(r) {
   const f = ui.diaryType || 'all';
   const tag = r.q.tag;
   const ok = (e) => { const w = work(e.workId); return w && (f === 'all' || w.type === f) && (!tag || (e.tags || []).includes(tag)); };
   const current = db.entries.filter((e) => e.status === 'in_corso' && ok(e)).sort((a, b) => (b.start || '').localeCompare(a.start || ''));
-  const done = db.entries.filter((e) => e.status !== 'in_corso' && entryDate(e) && ok(e)).sort((a, b) => entryDate(b).localeCompare(entryDate(a)) || (b.created || '').localeCompare(a.created || ''));
+  const byDate = diarySort === 'data';
+  // con "Data" le voci senza data stanno a parte in fondo; con gli altri ordini entrano nella lista
+  const done = db.entries.filter((e) => e.status !== 'in_corso' && (!byDate || entryDate(e)) && ok(e));
 
   let h = (ctx.ro ? '' : `<header class="top"><h1>Diario</h1><a class="icon-btn" href="#/cerca" aria-label="Aggiungi">${ICON.plus}</a></header>`) + typeFilter('diaryType', f);
   if (tag) h += `<p class="chips" style="margin-top:12px"><a class="chip on" href="#/diario">#${esc(tag)} ✕</a></p>`;
@@ -207,32 +248,42 @@ function viewDiary(r) {
     h += `<div class="empty"><p>${tag ? 'Nessuna voce con questo tag.' : 'Il diario è vuoto. Cerca un libro o un gioco che hai finito e registralo con data e voto.'}</p><a class="btn primary" href="#/cerca">${ICON.search} Cerca un titolo</a></div>`;
     return h;
   }
-  let month = '';
-  const count = {};
-  done.forEach((e) => { const m = entryDate(e).slice(0, 7); count[m] = (count[m] || 0) + 1; });
+  h += sortSelectHTML();
   const limit = ui.diaryLimit || 200;
-  done.slice(0, limit).forEach((e) => {
-    const w = work(e.workId);
-    const d = entryDate(e);
-    const m = d.slice(0, 7);
-    if (m !== month) {
-      month = m;
-      const [y, mm] = m.split('-');
-      h += `<div class="month">${cap(MONTHS[+mm - 1])} ${y}<small>${count[m]} ${count[m] === 1 ? 'voce' : 'voci'}</small></div>`;
-    }
-    const dow = new Date(d + 'T12:00').toLocaleDateString('it-IT', { weekday: 'short' });
-    const badges = [];
-    if (e.status === 'abbandonato') badges.push('<span class="pill drop">Abbandonato</span>');
-    if (e.status === 'completato') badges.push('<span class="pill full">100%</span>');
-    h += `<a class="entry" href="${ctx.link}${w.id}">
-      <div class="day">${+d.slice(8)}<small>${esc(dow)}</small></div>
-      ${coverHTML(w)}
-      <div style="min-width:0"><div class="t">${esc(w.title)}</div>
-        <div class="meta">${starsHTML(e.rating)}${e.liked ? ICON.heartS : ''}${e.again ? ICON.again : ''}${e.review ? ICON.text : ''}${badges.join('')}<span>${esc(w.year || '')}</span></div>
-      </div></a>`;
-  });
+  let group = '';
+  const count = {};
+  if (byDate) {
+    done.sort(byDateDesc);
+    done.forEach((e) => { const m = entryDate(e).slice(0, 7); count[m] = (count[m] || 0) + 1; });
+    done.slice(0, limit).forEach((e) => {
+      const w = work(e.workId);
+      const d = entryDate(e);
+      const m = d.slice(0, 7);
+      if (m !== group) {
+        group = m;
+        const [y, mm] = m.split('-');
+        h += `<div class="month">${cap(MONTHS[+mm - 1])} ${y}<small>${count[m]} ${count[m] === 1 ? 'voce' : 'voci'}</small></div>`;
+      }
+      const dow = new Date(d + 'T12:00').toLocaleDateString('it-IT', { weekday: 'short' });
+      h += entryRowHTML(e, w, `${+d.slice(8)}<small>${esc(dow)}</small>`);
+    });
+  } else {
+    const { sorted, label } = sortedGroups(done);
+    sorted.forEach((e) => { const g = label(e); count[g] = (count[g] || 0) + 1; });
+    sorted.slice(0, limit).forEach((e) => {
+      const w = work(e.workId);
+      const g = label(e);
+      if (g !== group) {
+        group = g;
+        h += `<div class="month">${esc(g)}<small>${count[g]} ${count[g] === 1 ? 'voce' : 'voci'}</small></div>`;
+      }
+      const d = entryDate(e);
+      const when = d ? new Date(d + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' }) : 'senza data';
+      h += entryRowHTML(e, w, null, `<span>· ${esc(when)}</span>`);
+    });
+  }
   if (done.length > limit) h += `<button class="btn block" style="margin-top:16px" data-act="more">Mostra altre voci (${fmtNum(done.length - limit)})</button>`;
-  h += undatedHTML(ok);
+  if (byDate) h += undatedHTML(ok);
   return h;
 }
 
@@ -1109,6 +1160,7 @@ document.addEventListener('submit', (ev) => {
 document.addEventListener('change', (ev) => {
   if (ev.target.id === 'f-nodate') { $('#datesRow').hidden = ev.target.checked; if (!ev.target.checked && !$('#f-end').value) $('#f-end').value = todayISO(); }
   if (ev.target.id === 'yearSel' && ev.target.value) { ui.statsYear = ev.target.value; saveUI(); render(); }
+  if (ev.target.id === 'diarySort') { diarySort = ev.target.value; ui.diaryLimit = 0; render(); }
 });
 document.addEventListener('input', (ev) => {
   if (ev.target.id === 'q') {

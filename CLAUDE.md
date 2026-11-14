@@ -70,3 +70,4 @@ Le decisioni prese vanno scritte qui sotto (una riga, con il numero della issue)
 
 - 07/11/2026 — Da ora si lavora solo con branch e pull request; il merge lo fa Andrea. I caricamenti a mano restano solo come ultima risorsa.
 - Il ramo `prova-accesso` è servito solo a verificare l'accesso di Claude: si può eliminare da GitHub → Branches.
+- 14/11/2026 — Ordinamento del diario: Data (predefinito, non si ricorda alla riapertura), Il mio voto, Titolo, Anno di uscita, Preferiti. Scartati autore/regista e durata. Niente voti Metacritic (nessun accesso ufficiale); un voto della critica eventualmente da IGDB/TMDB (#5, #7).
