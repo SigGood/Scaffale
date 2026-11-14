@@ -1,6 +1,6 @@
 // Scaffale: fa funzionare l'app anche senza rete (i dati sono già sul telefono).
 // Quando aggiorni i file su GitHub, cambia il numero qui sotto.
-const CACHE = 'scaffale-9';
+const CACHE = 'scaffale-10';
 // Copertine salvate sul telefono: cache a parte, che NON si svuota quando cambia CACHE.
 const COVERS = 'scaffale-copertine';
 const COVERS_MAX = 1500; // oltre questo numero si tolgono le copertine salvate da più tempo
