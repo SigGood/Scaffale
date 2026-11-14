@@ -135,6 +135,13 @@ function starsHTML(v, size) {
   }
   return h + '</span>';
 }
+// voto di un titolo: quello della voce più recente con un voto, altrimenti quello importato
+function myRating(id) {
+  let best = null;
+  db.entries.forEach((e) => { if (e.workId === id && e.rating && (!best || (entryDate(e) || '') >= (entryDate(best) || ''))) best = e; });
+  return best ? best.rating : (work(id)?.rating || 0);
+}
+const starsText = (v) => (v ? '★'.repeat(Math.floor(v / 2)) + (v % 2 ? '½' : '') : '');
 const ratingText = (v) => (v ? (v / 2).toLocaleString('it-IT') : '—');
 
 /* ================= rotte ================= */
@@ -734,20 +741,61 @@ function shrinkImage(file, maxH = 330) {
 }
 
 /* ================= aggiunta a liste ================= */
+// menu "posizione" per una lista numerata: le opzioni sono le posizioni nella lista senza il titolo
+function posOptionsHTML(l, wid) {
+  const others = l.items.filter((id) => id !== wid);
+  const cur = l.items.indexOf(wid);
+  const sel = cur >= 0 ? cur : others.length;
+  const lab = (id) => { const x = work(id); return x ? `${x.title}${myRating(id) ? ' ' + starsText(myRating(id)) : ''}` : '?'; };
+  return others.map((id, k) => `<option value="${k}"${k === sel ? ' selected' : ''}>${k + 1}° — prima di ${esc(lab(id))}</option>`).join('')
+    + `<option value="${others.length}"${others.length === sel ? ' selected' : ''}>${others.length + 1}° — in fondo${others.length ? ' (dopo ' + esc(lab(others[others.length - 1])) + ')' : ''}</option>`;
+}
+function placeInList(l, wid, k) {
+  l.items = l.items.filter((id) => id !== wid);
+  l.items.splice(Math.max(0, Math.min(k, l.items.length)), 0, wid);
+}
 function openListPicker(w) {
-  const body = `${db.lists.length ? db.lists.map((l) => `<label class="check"><input type="checkbox" data-list="${l.id}" ${l.items.includes(w.id) ? 'checked' : ''}> ${esc(l.name)} <span class="muted small">(${l.items.length})</span></label>`).join('') : '<p class="muted" style="margin:0">Non hai ancora liste.</p>'}
+  const body = `${db.lists.length ? db.lists.map((l) => `<div class="lpick"><label class="check"><input type="checkbox" data-list="${l.id}" ${l.items.includes(w.id) ? 'checked' : ''}> ${esc(l.name)} <span class="muted small">(${l.items.length})</span></label>
+      ${l.ranked ? `<label class="field lpos" data-pos-for="${l.id}" ${l.items.includes(w.id) ? '' : 'hidden'}><span>Posizione</span><select data-pos="${l.id}">${posOptionsHTML(l, w.id)}</select></label>` : ''}</div>`).join('') : '<p class="muted" style="margin:0">Non hai ancora liste.</p>'}
     <label class="field"><span>Nuova lista</span><input type="text" id="newList" placeholder="es. Migliori RPG"></label>`;
   openSheet('Aggiungi a una lista', body, () => {
     const ww = commitWork();
     $$('[data-list]', sheet).forEach((c) => {
       const l = db.lists.find((x) => x.id === c.dataset.list);
       const has = l.items.includes(ww.id);
-      if (c.checked && !has) l.items.push(ww.id);
+      const pos = $(`[data-pos="${l.id}"]`, sheet);
+      if (c.checked && pos) placeInList(l, ww.id, +pos.value);
+      else if (c.checked && !has) l.items.push(ww.id);
       if (!c.checked && has) l.items = l.items.filter((x) => x !== ww.id);
     });
     const n = $('#newList').value.trim();
     if (n) db.lists.push({ id: uid(), name: n, description: '', items: [ww.id], created: new Date().toISOString() });
     save(); render(); toast('Liste aggiornate');
+  });
+}
+// dentro una lista: aggiungi uno dei tuoi titoli (più recenti in alto)
+function openListAdd(l) {
+  const last = {};
+  db.entries.forEach((e) => { const d = entryDate(e) || e.created || ''; if (!last[e.workId] || d > last[e.workId]) last[e.workId] = d; });
+  const types = new Set(l.items.map((id) => work(id)?.type).filter(Boolean));
+  const pool = Object.values(db.works).filter((x) => !l.items.includes(x.id))
+    .sort((a, b) => (types.size ? (types.has(b.type) ? 1 : 0) - (types.has(a.type) ? 1 : 0) : 0) || (last[b.id] || '').localeCompare(last[a.id] || '') || a.title.localeCompare(b.title));
+  const row = (x) => `<button type="button" class="pick" data-act="list-add-pick" data-id="${l.id}" data-w="${x.id}">${coverHTML(x)}<span>${esc(x.title)}<br><span class="small muted">${starsHTML(myRating(x.id))} ${esc([x.year, last[x.id] ? new Date(last[x.id].slice(0, 10)).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' }) : ''].filter(Boolean).join(' · '))}</span></span></button>`;
+  const body = pool.length
+    ? `<input type="search" id="favq" placeholder="Cerca tra i tuoi titoli" autocomplete="off"><div id="favlist">${pool.slice(0, 60).map(row).join('')}</div>`
+    : '<p class="muted" style="margin:0">Tutti i tuoi titoli sono già in questa lista.</p>';
+  openSheet('Aggiungi alla lista', body);
+  const q = $('#favq');
+  if (q) q.addEventListener('input', () => { const v = norm(q.value); $('#favlist').innerHTML = pool.filter((x) => !v || norm(x.title + ' ' + (x.origTitle || '') + ' ' + (x.creator || '')).includes(v)).slice(0, 60).map(row).join(''); });
+}
+// scegli la posizione di un titolo in una lista numerata (per aggiungerlo o spostarlo)
+function openPosSheet(l, wid) {
+  const x = work(wid);
+  const isNew = !l.items.includes(wid);
+  closeSheet();
+  openSheet(isNew ? 'In che posizione?' : 'Sposta in posizione', `<p style="margin:0"><b>${esc(x ? x.title : '?')}</b> ${starsHTML(myRating(wid))}</p>
+    <label class="field"><span>Posizione</span><select id="posSel">${posOptionsHTML(l, wid)}</select></label>`, () => {
+    placeInList(l, wid, +$('#posSel').value); save(); render(); toast(isNew ? 'Aggiunto alla lista' : 'Posizione cambiata');
   });
 }
 
@@ -783,15 +831,69 @@ let listEditing = false;
 function viewList(r) {
   const l = db.lists.find((x) => x.id === r.id);
   if (!l) { setTimeout(() => go('#/liste', true)); return ''; }
+  const items = l.items.filter((id) => work(id)); // titoli non ancora caricati restano nella lista ma non si vedono
   let h = `<header class="top"><button class="icon-btn" data-act="back" aria-label="Indietro">${ICON.back}</button><h1>${esc(l.name)}</h1><button class="icon-btn" data-act="edit-list" data-id="${l.id}" aria-label="Modifica lista">${ICON.edit}</button></header>`;
   if (l.description) h += `<p class="muted">${esc(l.description)}</p>`;
-  if (!l.items.length) return h + `<div class="empty"><p>Lista vuota. Apri un libro o un gioco e tocca “Liste” per aggiungerlo qui.</p></div>`;
-  h += `<h2>${l.items.length} ${l.items.length === 1 ? 'titolo' : 'titoli'} <button data-act="list-edit-mode">${listEditing ? 'Fatto' : 'Riordina'}</button></h2>`;
+  const add = `<button class="btn block" data-act="list-add" data-id="${l.id}">${ICON.plus} Aggiungi un titolo</button>`;
+  if (!items.length) return h + `<div class="empty"><p>Lista vuota. Aggiungi un titolo qui sotto, oppure apri un libro, un gioco o un film e tocca “Liste”.</p>${add}</div>`;
+  h += `<h2>${items.length} ${items.length === 1 ? 'titolo' : 'titoli'} <button data-act="list-edit-mode">${listEditing ? 'Fatto' : 'Riordina'}</button></h2>`;
   if (listEditing) {
-    return h + l.items.map((id, i) => { const w = work(id); return `<div class="pick" style="grid-template-columns:40px minmax(0,1fr) auto">${coverHTML(w)}<span>${esc(w ? w.title : '?')}</span>
-      <span style="display:flex;gap:4px"><button class="icon-btn" data-act="move" data-id="${l.id}" data-i="${i}" data-d="-1" aria-label="Su" ${i === 0 ? 'disabled' : ''}>↑</button><button class="icon-btn" data-act="move" data-id="${l.id}" data-i="${i}" data-d="1" aria-label="Giù" ${i === l.items.length - 1 ? 'disabled' : ''}>↓</button><button class="icon-btn" data-act="rm-item" data-id="${l.id}" data-i="${i}" aria-label="Togli">✕</button></span></div>`; }).join('');
+    h += `<p class="small muted">Trascina ≡ per spostare${l.ranked ? ', oppure tocca il numero per scegliere la posizione' : ''}.</p><div class="lrows" id="lrows" data-id="${l.id}">`;
+    h += items.map((id, i) => { const w = work(id); return `<div class="lrow edit" data-w="${id}">
+      <span class="drag" aria-label="Trascina">≡</span>
+      ${l.ranked ? `<button type="button" class="pos" data-act="pos" data-id="${l.id}" data-w="${id}" aria-label="Cambia posizione">${i + 1}</button>` : ''}
+      ${coverHTML(w)}<div class="lt"><div class="t">${esc(w.title)}</div><div class="meta">${starsHTML(myRating(id))}<span>${esc(w.year || '')}</span></div></div>
+      <button type="button" class="icon-btn" data-act="rm-item" data-id="${l.id}" data-w="${id}" aria-label="Togli">✕</button></div>`; }).join('');
+    return h + '</div>';
   }
-  return h + `<div class="shelf wide">${l.items.map((id, i) => { const w = work(id); return w ? `<a href="${ctx.link}${w.id}">${coverHTML(w, 'm', l.ranked ? String(i + 1) : '')}<span class="cap">${esc(w.title)}</span></a>` : ''; }).join('')}</div>`;
+  if (l.ranked) {
+    h += '<div class="lrows">' + items.map((id, i) => { const w = work(id); return `<a class="lrow" href="${ctx.link}${w.id}"><span class="num">${i + 1}</span>${coverHTML(w)}
+      <div class="lt"><div class="t">${esc(w.title)}</div><div class="meta">${starsHTML(myRating(id))}${w.liked ? ICON.heartS : ''}<span>${esc([w.year, w.creator].filter(Boolean).join(' · '))}</span></div></div></a>`; }).join('') + '</div>';
+  } else {
+    h += `<div class="shelf wide">${items.map((id) => { const w = work(id); return `<a href="${ctx.link}${w.id}">${coverHTML(w)}<span class="cap">${esc(w.title)}</span>${myRating(id) ? `<span class="cap">${starsHTML(myRating(id))}</span>` : ''}</a>`; }).join('')}</div>`;
+  }
+  return h + `<div style="height:14px"></div>${add}`;
+}
+viewList.after = () => { const box = $('#lrows'); if (box) initListDrag(box); };
+// trascinamento delle righe (dito o mouse) tenendo premuto ≡
+function initListDrag(box) {
+  box.addEventListener('pointerdown', (ev) => {
+    const handle = ev.target.closest('.drag');
+    if (!handle) return;
+    ev.preventDefault();
+    const row = handle.closest('.lrow');
+    row.classList.add('dragging');
+    let lastY = ev.clientY, scrollTimer = null;
+    const moveTo = (y) => {
+      lastY = y;
+      const rows = [...box.children].filter((x) => x !== row);
+      const after = rows.find((x) => { const b = x.getBoundingClientRect(); return y < b.top + b.height / 2; });
+      if (after) { if (row.nextElementSibling !== after) box.insertBefore(row, after); } else if (box.lastElementChild !== row) box.appendChild(row);
+    };
+    const edge = () => {
+      const m = 70; let d = 0;
+      if (lastY < m) d = -12; else if (lastY > innerHeight - m) d = 12;
+      if (d) { scrollBy(0, d); moveTo(lastY); }
+    };
+    scrollTimer = setInterval(edge, 30);
+    const onMove = (e) => { if (e.pointerId === ev.pointerId) { e.preventDefault(); moveTo(e.clientY); } };
+    const onUp = (e) => {
+      if (e.pointerId !== ev.pointerId) return;
+      clearInterval(scrollTimer);
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onUp);
+      row.classList.remove('dragging');
+      const l = db.lists.find((x) => x.id === box.dataset.id);
+      const order = [...box.children].map((x) => x.dataset.w);
+      if (l) order.push(...l.items.filter((id) => !order.includes(id)));
+      if (l && order.join() !== l.items.join()) { l.items = order; save(); }
+      render();
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
+  });
 }
 
 /* ================= PROFILO / STATISTICHE ================= */
@@ -1076,11 +1178,15 @@ document.addEventListener('click', (ev) => {
     case 'edit-list': openListEditor(db.lists.find((l) => l.id === el.dataset.id)); break;
     case 'del-list': if (confirm('Eliminare la lista? I titoli restano nello scaffale.')) { db.lists = db.lists.filter((l) => l.id !== el.dataset.id); save(); closeSheet(); go('#/liste', true); } break;
     case 'list-edit-mode': listEditing = !listEditing; render(); break;
-    case 'move': {
-      const l = db.lists.find((x) => x.id === el.dataset.id); const i = +el.dataset.i; const j = i + +el.dataset.d;
-      [l.items[i], l.items[j]] = [l.items[j], l.items[i]]; save(); render(); break;
+    case 'rm-item': { const l = db.lists.find((x) => x.id === el.dataset.id); l.items = l.items.filter((id) => id !== el.dataset.w); save(); render(); break; }
+    case 'pos': openPosSheet(db.lists.find((x) => x.id === el.dataset.id), el.dataset.w); break;
+    case 'list-add': openListAdd(db.lists.find((x) => x.id === el.dataset.id)); break;
+    case 'list-add-pick': {
+      const l = db.lists.find((x) => x.id === el.dataset.id);
+      if (l.ranked && l.items.length) openPosSheet(l, el.dataset.w);
+      else { l.items.push(el.dataset.w); save(); closeSheet(); render(); toast('Aggiunto alla lista'); }
+      break;
     }
-    case 'rm-item': { const l = db.lists.find((x) => x.id === el.dataset.id); l.items.splice(+el.dataset.i, 1); save(); render(); break; }
     case 'year': ui.statsYear = el.dataset.val; saveUI(); render(); break;
     case 'fav-pick': openFavPicker(el.dataset.type); break;
     case 'fav-set': {
@@ -1158,6 +1264,7 @@ document.addEventListener('submit', (ev) => {
   }
 });
 document.addEventListener('change', (ev) => {
+  if (ev.target.dataset && ev.target.dataset.list) { const p = $(`[data-pos-for="${ev.target.dataset.list}"]`, sheet); if (p) p.hidden = !ev.target.checked; }
   if (ev.target.id === 'f-nodate') { $('#datesRow').hidden = ev.target.checked; if (!ev.target.checked && !$('#f-end').value) $('#f-end').value = todayISO(); }
   if (ev.target.id === 'yearSel' && ev.target.value) { ui.statsYear = ev.target.value; saveUI(); render(); }
   if (ev.target.id === 'diarySort') { diarySort = ev.target.value; ui.diaryLimit = 0; render(); }
