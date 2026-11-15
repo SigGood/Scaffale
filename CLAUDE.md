@@ -14,7 +14,7 @@ PWA in JavaScript puro, senza framework né build: i file nella repo sono esatta
 | File | Contenuto |
 |---|---|
 | `index.html` | guscio della pagina e barra delle sezioni |
-| `app.js` | quasi tutta l'app: dati, viste (Diario, Cerca, Da fare, Liste, Profilo), ricerca |
+| `app.js` | quasi tutta l'app: dati, viste (Diario, Cerca/Registra, Da fare, Liste, Profilo), ricerca |
 | `cloud.js` | account, sincronizzazione e amici (Firebase Auth + Firestore) |
 | `import.js` | importazione da Letterboxd e Goodreads, ricerca copertine in background |
 | `sw.js` | service worker: funzionamento offline e cache |
@@ -72,3 +72,6 @@ Le decisioni prese vanno scritte qui sotto (una riga, con il numero della issue)
 - Il ramo `prova-accesso` è servito solo a verificare l'accesso di Claude: si può eliminare da GitHub → Branches.
 - 14/11/2026 — Ordinamento del diario: Data (predefinito, non si ricorda alla riapertura), Il mio voto, Titolo, Anno di uscita, Preferiti. Scartati autore/regista e durata. Niente voti Metacritic (nessun accesso ufficiale); un voto della critica eventualmente da IGDB/TMDB (#5, #7).
 - 14/11/2026 — Liste: le classifiche (liste numerate) si vedono come righe con numero e stelle; si riordinano trascinando ≡ o toccando il numero; un titolo si può inserire direttamente in una posizione (#10).
+- 15/11/2026 — Navigazione: barra in basso a 5 voci (Diario, Cerca, + giallo al centro, Amici, Profilo con icona persona). "Da fare" e "Liste" sono pulsanti a pillola accanto al titolo del Diario e aprono una pagina a parte con freccia indietro. Il + (#/registra) è "registra subito" come Letterboxd: cerchi, tocchi il risultato e si apre il pannello di registrazione; Cerca resta per esplorare (#12).
+- 15/11/2026 — Filtro categorie (Diario, Da fare): Libri/Giochi/Film con icona; "Tutto" è un interruttore a sinistra di "Ordina per" (toccando una categoria si spegne; spegnendolo si torna all'ultima categoria). L'ultima scelta si ricorda alla riapertura (#12).
+- 15/11/2026 — Voci del diario: titolo su più righe, sotto "Regista/Autore/Studio · anno" (con più nomi: primo + "e altri"), icona rivisto = cerchio verde con una freccia. Scheda opera: tolto il pulsante "Preferito" (i preferiti si scelgono dal Profilo) e il riquadro "voci nel diario". Pannello Registra: dove/formato/piattaforma/tag/spoiler sotto "Altri dettagli"; "Non ricordo la data" al posto della casella; spiegazione della mezza stella solo le prime 3 volte. Impostazioni: niente indirizzo del ponte, solo un avviso se manca (#12).

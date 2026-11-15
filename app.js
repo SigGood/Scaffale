@@ -35,7 +35,10 @@ const ICON = {
   plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
   edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>',
   gear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>',
-  again: '<svg class="ic" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5.3L20 9M20 4v5h-5M20 12a8 8 0 0 1-14 5.3L4 15M4 20v-5h5"/></svg>',
+  again: '<svg class="ic again" viewBox="0 0 24 24" aria-label="Rivisto"><path d="M4.05 11a8 8 0 1 1 .5 4M4 20v-5h5"/></svg>',
+  book: '<svg viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v15H5.5A1.5 1.5 0 0 1 4 17.5zM20 5.5A1.5 1.5 0 0 0 18.5 4H13v15h5.5a1.5 1.5 0 0 0 1.5-1.5z"/></svg>',
+  game: '<svg viewBox="0 0 24 24"><path d="M7 7h10a5 5 0 0 1 0 10c-1.6 0-2.4-1-3-2h-4c-.6 1-1.4 2-3 2A5 5 0 0 1 7 7z"/><path d="M8 10v4M6 12h4M15.5 11h.01M17.5 13h.01"/></svg>',
+  film: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 8h4M3 12h4M3 16h4M17 8h4M17 12h4M17 16h4"/></svg>',
   text: '<svg class="ic" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
   heartS: '<svg class="ic heart" viewBox="0 0 24 24"><path d="M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10z"/></svg>',
   search: '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg>',
@@ -165,11 +168,11 @@ window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); }
 function render() {
   const r = parseHash();
   if (r.name !== 'cerca') search.replace = null;
-  const tab = { diario: 'diario', cerca: 'cerca', 'da-fare': 'da-fare', liste: 'liste', lista: 'liste', profilo: 'profilo', impostazioni: 'profilo', controlla: 'profilo', amici: 'amici', amico: 'amici' }[r.name];
+  const tab = { diario: 'diario', cerca: 'cerca', registra: 'registra', 'da-fare': 'diario', liste: 'diario', lista: 'diario', profilo: 'profilo', impostazioni: 'profilo', controlla: 'profilo', amici: 'amici', amico: 'amici' }[r.name];
   $$('.tabbar a').forEach((a) => { if (a.dataset.tab === tab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   const view = $('#view');
   const V = {
-    diario: viewDiary, cerca: viewSearch, 'da-fare': viewWish, liste: viewLists, lista: viewList,
+    diario: viewDiary, cerca: viewSearch, registra: viewSearch, 'da-fare': viewWish, liste: viewLists, lista: viewList,
     profilo: viewProfile, impostazioni: viewSettings, opera: viewWork, anteprima: viewWork,
     amici: viewFriends, amico: viewFriend, controlla: viewCheck,
   }[r.name] || viewDiary;
@@ -178,10 +181,25 @@ function render() {
 }
 
 /* ================= DIARIO ================= */
+// filtro per categoria: tre pulsanti con icona; "Tutto" è un interruttore a parte (allSwitch).
+// Con "Tutto" acceso le tre categorie appaiono tutte accese; toccandone una l'interruttore si spegne.
+// ui[key] = 'all' | 'book' | 'game' | 'film' (si ricorda alla riapertura); ui[key + 'Last'] = ultima categoria singola scelta
 function typeFilter(key, val) {
-  return `<div class="seg" role="group" aria-label="Filtro">
-    ${[['all', 'Tutto'], ['book', 'Libri'], ['game', 'Giochi'], ['film', 'Film']].map(([k, l]) => `<button data-act="filter" data-key="${key}" data-val="${k}" aria-pressed="${val === k}">${l}</button>`).join('')}
+  const all = val === 'all';
+  return `<div class="seg cats${all ? ' all' : ''}" role="group" aria-label="Categoria">
+    ${TYPES.map((k) => `<button data-act="filter" data-key="${key}" data-val="${k}" aria-pressed="${all || val === k}">${ICON[k]}<span>${TYPE[k].plural}</span></button>`).join('')}
   </div>`;
+}
+function allSwitch(key, val) {
+  return `<button type="button" class="switch" role="switch" aria-checked="${val === 'all'}" data-act="filter-all" data-key="${key}"><span class="sw" aria-hidden="true"><i></i></span>Tutto</button>`;
+}
+// riga sotto il filtro: interruttore "Tutto" a sinistra, altro (es. "Ordina per") a destra
+const filterRowHTML = (key, val, right = '') => `<div class="filterrow">${allSwitch(key, val)}${right}</div>`;
+// "Regista · anno" (o autore / studio): con più nomi solo il primo + "e altri"
+function byLine(w) {
+  const names = String(w.creator || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const who = names.length > 1 ? `${names[0]} e altri` : names[0] || '';
+  return [who, w.year].filter(Boolean).join(' · ');
 }
 // voci senza data (es. libri letti su Goodreads senza "Date Read"): in fondo al diario, a richiesta
 function undatedHTML(ok) {
@@ -191,15 +209,14 @@ function undatedHTML(ok) {
   if (!ui.showUndated) return h + `<p class="small muted">Titoli segnati come letti o visti senza una data. Apri una voce e tocca “Modifica” per aggiungerla.</p><button class="btn block" data-act="show-undated">Mostra</button>`;
   return h + und.sort((x, y) => (work(x.workId).title || '').localeCompare(work(y.workId).title || '')).map((e) => {
     const w = work(e.workId);
-    return `<a class="entry" href="${ctx.link}${w.id}"><div class="day">–</div>${coverHTML(w)}
-      <div style="min-width:0"><div class="t">${esc(w.title)}</div><div class="meta">${starsHTML(e.rating)}${e.liked ? ICON.heartS : ''}${e.review ? ICON.text : ''}<span>${esc(w.year || '')}</span></div></div></a>`;
+    return entryRowHTML(e, w, '–');
   }).join('') + `<button class="btn block" style="margin-top:12px" data-act="show-undated">Nascondi</button>`;
 }
 // ordine del diario: non viene salvato, a ogni apertura dell'app si riparte da "Data"
 let diarySort = 'data';
 const DIARY_SORTS = [['data', 'Data'], ['voto', 'Il mio voto'], ['titolo', 'Titolo (A–Z)'], ['anno', 'Anno di uscita'], ['preferiti', 'Preferiti prima']];
 function sortSelectHTML() {
-  return `<label class="sortsel"><span>Ordina per</span><select id="diarySort">${DIARY_SORTS.map(([k, l]) => `<option value="${k}"${diarySort === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>`;
+  return `<label class="sortsel"><span>Ordina per</span><select id="diarySort" aria-label="Ordina per">${DIARY_SORTS.map(([k, l]) => `<option value="${k}"${diarySort === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>`;
 }
 function entryRowHTML(e, w, left, extra = '') {
   const badges = [];
@@ -209,7 +226,8 @@ function entryRowHTML(e, w, left, extra = '') {
       ${left === null ? '' : `<div class="day">${left}</div>`}
       ${coverHTML(w)}
       <div style="min-width:0"><div class="t">${esc(w.title)}</div>
-        <div class="meta">${starsHTML(e.rating)}${e.liked ? ICON.heartS : ''}${e.again ? ICON.again : ''}${e.review ? ICON.text : ''}${badges.join('')}<span>${esc(w.year || '')}</span>${extra}</div>
+        ${byLine(w) ? `<div class="by">${esc(byLine(w))}</div>` : ''}
+        <div class="meta">${starsHTML(e.rating)}${e.liked ? ICON.heartS : ''}${e.review ? ICON.text : ''}${e.again ? ICON.again : ''}${badges.join('')}${extra}</div>
       </div></a>`;
 }
 const byDateDesc = (a, b) => (entryDate(b) || '').localeCompare(entryDate(a) || '') || (b.created || '').localeCompare(a.created || '');
@@ -243,7 +261,9 @@ function viewDiary(r) {
   // con "Data" le voci senza data stanno a parte in fondo; con gli altri ordini entrano nella lista
   const done = db.entries.filter((e) => e.status !== 'in_corso' && (!byDate || entryDate(e)) && ok(e));
 
-  let h = (ctx.ro ? '' : `<header class="top"><h1>Diario</h1><a class="icon-btn" href="#/cerca" aria-label="Aggiungi">${ICON.plus}</a></header>`) + typeFilter('diaryType', f);
+  const hasDone = db.entries.some((e) => e.status !== 'in_corso' && ok(e));
+  let h = (ctx.ro ? '' : `<header class="top diary-top"><h1>Diario</h1><a class="pillbtn" href="#/da-fare">${ICON.bookmark}Da fare</a><a class="pillbtn" href="#/liste">${ICON.list}Liste</a></header>`)
+    + typeFilter('diaryType', f) + filterRowHTML('diaryType', f, hasDone ? sortSelectHTML() : '');
   if (tag) h += `<p class="chips" style="margin-top:12px"><a class="chip on" href="#/diario">#${esc(tag)} ✕</a></p>`;
   if (!ctx.ro) h += matchStatusHTML();
 
@@ -252,10 +272,9 @@ function viewDiary(r) {
   }
   if (!done.length && !current.length && !db.entries.some((e) => e.status !== 'in_corso' && !entryDate(e) && ok(e))) {
     if (ctx.ro) return h + '<div class="empty"><p>Ancora nessuna voce.</p></div>';
-    h += `<div class="empty"><p>${tag ? 'Nessuna voce con questo tag.' : 'Il diario è vuoto. Cerca un libro o un gioco che hai finito e registralo con data e voto.'}</p><a class="btn primary" href="#/cerca">${ICON.search} Cerca un titolo</a></div>`;
+    h += `<div class="empty"><p>${tag ? 'Nessuna voce con questo tag.' : 'Il diario è vuoto. Tocca + per cercare un libro, un gioco o un film che hai finito e registrarlo con data e voto.'}</p><a class="btn primary" href="#/registra">${ICON.plus} Registra un titolo</a></div>`;
     return h;
   }
-  h += sortSelectHTML();
   const limit = ui.diaryLimit || 200;
   let group = '';
   const count = {};
@@ -298,14 +317,20 @@ function viewDiary(r) {
 let search = { type: 'book', q: '', results: null, loading: false, error: '' };
 let searchTimer, searchSeq = 0;
 
-function viewSearch() {
+// la stessa pagina serve due scopi: "Cerca" (toccando un risultato si apre la scheda del titolo)
+// e "Registra" dal + della barra in basso (toccando un risultato si apre subito il pannello per registrarlo)
+function viewSearch(r) {
+  const quick = r && r.name === 'registra';
   search.type = search.replace && work(search.replace) ? work(search.replace).type : ui.searchType || search.type;
   const t = search.type;
   const noKey = t !== 'book' && !appConfig.ponte;
   const replacing = search.replace && work(search.replace);
-  let h = `<header class="top">${replacing ? `<button class="icon-btn" data-act="cancel-replace" aria-label="Annulla">${ICON.close}</button>` : ''}<h1>${replacing ? 'Cambia abbinamento' : 'Cerca'}</h1></header>`;
+  let h = `<header class="top">${replacing ? `<button class="icon-btn" data-act="cancel-replace" aria-label="Annulla">${ICON.close}</button>` : ''}<h1>${replacing ? 'Cambia abbinamento' : quick ? 'Registra' : 'Cerca'}</h1></header>`;
   if (replacing) h += `<p class="small muted" style="margin-top:0">Scegli il risultato giusto per <b>${esc(replacing.lbName || replacing.title)}</b>${replacing.year ? ' (' + esc(replacing.year) + ')' : ''}. Voti, date e recensioni restano.</p>`;
-  else h += `<div class="seg" role="group" aria-label="Tipo">${[['book', 'Libri'], ['game', 'Giochi'], ['film', 'Film']].map(([k, l]) => `<button data-act="stype" data-val="${k}" aria-pressed="${t === k}">${l}</button>`).join('')}</div>`;
+  else {
+    if (quick) h += `<p class="small muted" style="margin-top:-4px">Cerca cosa hai finito: toccandolo si apre subito la scheda per registrarlo.</p>`;
+    h += `<div class="seg cats" role="group" aria-label="Tipo">${TYPES.map((k) => `<button data-act="stype" data-val="${k}" aria-pressed="${t === k}">${ICON[k]}<span>${TYPE[k].plural}</span></button>`).join('')}</div>`;
+  }
   h += `<form class="searchbar" data-form="search" role="search">
     <input id="q" type="search" enterkeyhint="search" autocomplete="off" placeholder="${{ book: 'Titolo, autore o ISBN', game: 'Nome del gioco', film: 'Titolo del film' }[t]}" value="${esc(search.q)}" ${noKey ? 'disabled' : ''}>
   </form>`;
@@ -457,7 +482,10 @@ async function enrichPreview(w) {
   try {
     Object.assign(w, await tmdbDetails(w, w.sourceId));
     if (db.works[w.id]) save();
-    if (w.creator) { const by = $('#by'); if (by) by.textContent = w.creator; }
+    if (w.creator) {
+      const by = $('#by'); if (by) by.textContent = w.creator;
+      const ls = $('#logSub'); if (ls) ls.textContent = [w.creator, w.year].filter(Boolean).join(' · ');
+    }
   } catch (e) { /* facoltativo */ }
   delete w._enriching;
 }
@@ -512,6 +540,17 @@ function commitWork() {
   history.replaceState(null, '', `#/opera/${w.id}`);
   return w;
 }
+// come commitWork, ma per il + "Registra": salva il titolo scelto senza cambiare pagina
+function commitQuick(w) {
+  if (w.id && db.works[w.id]) return db.works[w.id];
+  const existing = findBySource(w.source, w.sourceId);
+  if (existing) return existing;
+  const nw = { ...w, id: uid(), wish: false, liked: false, added: new Date().toISOString() };
+  delete nw.sourceName; delete nw._enriching;
+  db.works[nw.id] = nw;
+  if (preview === w) preview = null;
+  return nw;
+}
 
 function viewWork(r) {
   const w = r.name === 'anteprima' ? preview : work(r.id);
@@ -522,7 +561,6 @@ function viewWork(r) {
   const avg = rated.length ? rated.reduce((s, e) => s + e.rating, 0) / rated.length : (w.rating || 0);
   const times = es.filter(DONE).length || (w.seen ? 1 : 0);
   const inLists = db.lists.filter((l) => l.items.includes(w.id)).length;
-  const fav = (db.favorites[w.type] || []).includes(w.id);
   const meta = [];
   meta.push(`<span class="pill ${w.type}">${T.label}</span>`);
   if (w.year) meta.push(`<span class="pill" style="color:var(--muted)">${esc(w.year)}</span>`);
@@ -538,7 +576,6 @@ function viewWork(r) {
     <button class="act like" data-act="like" aria-pressed="${!!w.liked}">${ICON.heart}<span>Mi piace</span></button>
     <button class="act" data-act="wish" aria-pressed="${!!w.wish}">${ICON.bookmark}<span>${T.wish}</span></button>
     <button class="act" data-act="to-list" aria-pressed="${inLists > 0}">${ICON.list}<span>${inLists ? `In ${inLists} ${inLists === 1 ? 'lista' : 'liste'}` : 'Liste'}</span></button>
-    <button class="act" data-act="fav" aria-pressed="${fav}">${ICON.star}<span>Preferito</span></button>
   </div>
   <button class="btn primary block log-cta" data-act="log">${ICON.plus} ${T.log}</button>`}`;
   if (!ctx.ro) h += friendsOnWork(w);
@@ -549,8 +586,7 @@ function viewWork(r) {
 
   if (es.length || w.seen || w.rating) {
     h += `<div class="facts"><div class="fact"><b>${ratingText(Math.round(avg))}</b><span>${ctx.ro ? 'voto di ' + esc(ctx.name) : 'il tuo voto'}</span></div>
-      <div class="fact"><b>${times}</b><span>${times === 1 ? 'volta' : 'volte'} ${{ book: 'letto', game: 'finito', film: 'visto' }[w.type]}</span></div>
-      <div class="fact"><b>${es.length}</b><span>${es.length === 1 ? 'voce' : 'voci'} nel diario</span></div></div>`;
+      <div class="fact"><b>${times}</b><span>${times === 1 ? 'volta' : 'volte'} ${{ book: 'letto', game: 'finito', film: 'visto' }[w.type]}</span></div></div>`;
     if (es.length) h += `<h2>${ctx.ro ? 'Il diario di ' + esc(ctx.name) : 'Il tuo diario'}</h2>`;
     else h += `<p class="small muted">${w.type === 'book' ? 'Letto' : 'Visto'} senza data nel diario.</p>`;
     h += es.map((e) => {
@@ -593,11 +629,11 @@ function closeSheet() { if (sheet.open) sheet.close(); }
 sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
 sheet.addEventListener('close', () => { if (pendingRender) setTimeout(softRender, 0); });
 
-function starsInputHTML(v) {
+function starsInputHTML(v, hint = true) {
   let s = '';
   for (let i = 1; i <= 5; i++) { const f = v >= i * 2 ? 100 : v === i * 2 - 1 ? 50 : 0; s += `<span class="st" data-i="${i}"><i style="width:${f}%"></i></span>`; }
   return `<div class="rating-row"><div class="stars-input" id="rating" data-val="${v || 0}" role="slider" tabindex="0" aria-label="Voto" aria-valuemin="0" aria-valuemax="5" aria-valuenow="${(v || 0) / 2}">${s}</div><span class="val" id="ratingVal">${ratingText(v)}</span></div>
-  <span class="small muted">Tocca la metà sinistra di una stella per la mezza stella. Tocca di nuovo per togliere il voto.</span>`;
+  ${hint ? '<span class="small muted">Tocca la metà sinistra di una stella per la mezza stella. Tocca di nuovo per togliere il voto.</span>' : ''}`;
 }
 function setStars(el, v) {
   el.dataset.val = v;
@@ -606,29 +642,53 @@ function setStars(el, v) {
   $('#ratingVal').textContent = ratingText(v);
 }
 
+// pannello Registra: "Non ricordo la data" / "Aggiungi la data"
+function setNoDate(on) {
+  $('#f-nodate').checked = on;
+  $('#datesRow').hidden = on;
+  $('#nodateOn').hidden = on;
+  $('#nodateOff').hidden = !on;
+  if (!on && !$('#f-end').value) $('#f-end').value = todayISO();
+}
 function endLabel(type, status) {
   if (status === 'abbandonato') return type === 'film' ? 'Interrotto il' : 'Abbandonato il';
   return type === 'film' ? 'Visto il' : 'Finito il';
 }
-function openLog(w, entry) {
+// pannello per registrare o modificare una voce del diario.
+// opts.quick = aperto dal + "Registra": salva il titolo senza passare dalla sua scheda e poi torna al Diario
+function openLog(w, entry, opts = {}) {
   const T = TYPE[w.type];
   const prevDone = db.entries.some((e) => e.workId === w.id && DONE(e) && (!entry || e.id !== entry.id));
   const e = entry ? { ...entry } : { status: 'finito', start: '', end: todayISO(), rating: 0, liked: false, again: prevDone, review: '', spoiler: false, tags: [], format: '', platform: '', hours: '', pages: w.pages || '' };
   const statusBtns = Object.entries(T.status).map(([k, l]) => `<button type="button" data-act="status" data-val="${k}" aria-pressed="${e.status === k}">${l}</button>`).join('');
   const allTags = [...new Set(db.entries.flatMap((x) => x.tags || []))].sort();
+  // la spiegazione della mezza stella si vede solo le prime volte
+  const showHint = (ui.starHint || 0) < 3;
+  if (showHint) { ui.starHint = (ui.starHint || 0) + 1; saveUI(); }
+  // "Altri dettagli": chiuso per una voce nuova, aperto se la voce ha già qualcuno di questi campi
+  const hasMore = !!(entry && (e.where || e.format || e.platform || e.hours || e.spoiler || (e.tags && e.tags.length)));
+  const moreLbl = { film: 'dove, tag, spoiler', book: 'formato, pagine, tag, spoiler', game: 'piattaforma, ore, tag, spoiler' }[w.type];
   const body = `
-    <div style="display:grid;grid-template-columns:60px minmax(0,1fr);gap:12px;align-items:center">${coverHTML(w)}<div><b>${esc(w.title)}</b><div class="small muted">${esc([w.creator, w.year].filter(Boolean).join(' · '))}</div></div></div>
+    <div style="display:grid;grid-template-columns:60px minmax(0,1fr);gap:12px;align-items:center">${coverHTML(w)}<div><b>${esc(w.title)}</b><div class="small muted" id="logSub">${esc([w.creator, w.year].filter(Boolean).join(' · '))}</div></div></div>
     <div class="seg wrap" role="group" aria-label="Stato" id="status" data-val="${e.status}" data-type="${w.type}">${statusBtns}</div>
-    <label class="check" id="nodateWrap" ${e.status === 'in_corso' ? 'hidden' : ''}><input type="checkbox" id="f-nodate" ${e.undated ? 'checked' : ''}> Senza data (non ricordo quando, non conta nelle statistiche per anno)</label>
-    <div class="row" id="datesRow" ${e.undated ? 'hidden' : ''}>
-      <label class="field" ${w.type === 'film' ? 'hidden' : ''}><span>Iniziato il</span><input type="date" id="f-start" value="${esc(e.start)}" max="${todayISO()}"></label>
-      <label class="field" id="endWrap" ${e.status === 'in_corso' ? 'hidden' : ''}><span id="endLbl">${endLabel(w.type, e.status)}</span><input type="date" id="f-end" value="${esc(e.end)}" max="${todayISO()}"></label>
+    <div class="stack" style="gap:8px">
+      <input type="checkbox" id="f-nodate" ${e.undated ? 'checked' : ''} hidden>
+      <div class="row" id="datesRow" ${e.undated ? 'hidden' : ''}>
+        <label class="field" ${w.type === 'film' ? 'hidden' : ''}><span>Iniziato il</span><input type="date" id="f-start" value="${esc(e.start)}" max="${todayISO()}"></label>
+        <label class="field" id="endWrap" ${e.status === 'in_corso' ? 'hidden' : ''}><span id="endLbl">${endLabel(w.type, e.status)}</span><input type="date" id="f-end" value="${esc(e.end)}" max="${todayISO()}"></label>
+      </div>
+      <div id="nodateWrap" ${e.status === 'in_corso' ? 'hidden' : ''}>
+        <button type="button" class="linkish" id="nodateOn" data-act="nodate" data-val="1" ${e.undated ? 'hidden' : ''}>Non ricordo la data</button>
+        <p class="small muted" id="nodateOff" style="margin:0" ${e.undated ? '' : 'hidden'}>Senza data: non conta nelle statistiche per anno. <button type="button" class="linkish" data-act="nodate" data-val="0">Aggiungi la data</button></p>
+      </div>
     </div>
-    <div class="field"><span>Voto</span>${starsInputHTML(e.rating)}</div>
+    <div class="field"><span>Voto</span>${starsInputHTML(e.rating, showHint)}</div>
     <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <button type="button" class="heart-btn" id="f-liked" data-act="toggle-press" aria-pressed="${!!e.liked}" aria-label="Mi piace">${ICON.heart}</button>
       <label class="check"><input type="checkbox" id="f-again" ${e.again ? 'checked' : ''}> ${{ book: 'Riletto', game: 'Rigiocato', film: 'Rivisto' }[w.type]}</label>
     </div>
+    <label class="field"><span>Recensione</span><textarea id="f-review" placeholder="Cosa ne pensi?">${esc(e.review)}</textarea></label>
+    <details class="more" ${hasMore ? 'open' : ''}><summary>Altri dettagli <span class="muted small">· ${moreLbl}</span></summary><div class="stack">
     ${w.type === 'film' ? `<label class="field"><span>Dove</span><input type="text" id="f-where" list="wheres" value="${esc(e.where || '')}" placeholder="es. Cinema, Netflix"><datalist id="wheres">${['Cinema', 'Streaming', 'TV', 'Blu-ray / DVD', ...new Set(db.entries.map((x) => x.where).filter(Boolean))].map((x) => `<option value="${esc(x)}">`).join('')}</datalist></label>`
     : w.type === 'book' ? `<div class="row">
       <label class="field"><span>Formato</span><select id="f-format"><option value="">—</option>${BOOK_FORMATS.map((f) => `<option ${e.format === f ? 'selected' : ''}>${f}</option>`).join('')}</select></label>
@@ -636,9 +696,9 @@ function openLog(w, entry) {
     : `<div class="row">
       <label class="field"><span>Piattaforma</span><input type="text" id="f-platform" list="plats" value="${esc(e.platform)}" placeholder="es. Switch"><datalist id="plats">${(w.platforms || []).map((p) => `<option value="${esc(p)}">`).join('')}</datalist></label>
       <label class="field"><span>Ore giocate</span><input type="number" inputmode="decimal" min="0" step="0.5" id="f-hours" value="${esc(e.hours || '')}"></label></div>`}
-    <label class="field"><span>Recensione</span><textarea id="f-review" placeholder="Cosa ne pensi?">${esc(e.review)}</textarea></label>
-    <label class="check"><input type="checkbox" id="f-spoiler" ${e.spoiler ? 'checked' : ''}> Contiene spoiler</label>
     <label class="field"><span>Tag (separati da virgola)</span><input type="text" id="f-tags" list="tagList" value="${esc((e.tags || []).join(', '))}" placeholder="es. estate, regalo, in treno"><datalist id="tagList">${allTags.map((t) => `<option value="${esc(t)}">`).join('')}</datalist></label>
+    <label class="check"><input type="checkbox" id="f-spoiler" ${e.spoiler ? 'checked' : ''}> La recensione contiene spoiler</label>
+    </div></details>
     ${entry ? `<button type="button" class="btn danger" data-act="del-entry" data-id="${entry.id}">Elimina questa voce</button>` : ''}`;
   openSheet(entry ? 'Modifica voce' : T.log, body, () => {
     const status = $('#status').dataset.val;
@@ -655,7 +715,7 @@ function openLog(w, entry) {
     else if (w.type === 'film') { data.where = val('f-where'); }
     else { data.platform = val('f-platform'); data.hours = +String(val('f-hours')).replace(',', '.') || null; }
     if (data.start && data.end && data.start > data.end) { toast('La data di inizio è dopo quella di fine'); return false; }
-    const ww = commitWork();
+    const ww = opts.quick ? commitQuick(w) : commitWork();
     if (entry) Object.assign(entry, data);
     else db.entries.push({ id: uid(), workId: ww.id, created: new Date().toISOString(), ...data });
     if (data.liked) ww.liked = true;
@@ -663,7 +723,11 @@ function openLog(w, entry) {
     if (w.type === 'book' && data.pages && !ww.pages) ww.pages = data.pages;
     save();
     toast(entry ? 'Voce aggiornata' : 'Aggiunto al diario');
-    render();
+    if (opts.quick) {
+      search.q = ''; search.results = null; search.error = '';
+      enrichPreview(ww); // per i film: regia e durata
+      go('#/diario', true);
+    } else render();
   });
 }
 
@@ -704,7 +768,10 @@ function openWorkEditor(w, isNew) {
     if (isNew) {
       const nw = { id: uid(), source: 'manual', sourceId: uid(), wish: false, liked: false, added: new Date().toISOString(), ...data };
       db.works[nw.id] = nw;
-      if (save()) { closeSheet(); go(`#/opera/${nw.id}`); toast('Aggiunto allo scaffale'); }
+      save();
+      // dal + "Registra": si passa subito al pannello per registrarlo
+      if (parseHash().name === 'registra') { setTimeout(() => openLog(nw, null, { quick: true }), 0); return; }
+      closeSheet(); go(`#/opera/${nw.id}`); toast('Aggiunto allo scaffale');
       return;
     }
     Object.assign(w, data);
@@ -803,14 +870,15 @@ function openPosSheet(l, wid) {
 function viewWish() {
   const f = ui.wishType || 'all';
   const ws = Object.values(db.works).filter((w) => w.wish && (f === 'all' || w.type === f)).sort((a, b) => (b.wishAdded || '').localeCompare(a.wishAdded || ''));
-  let h = `<header class="top"><h1>Da fare</h1></header>${typeFilter('wishType', f)}`;
-  if (!ws.length) return h + `<div class="empty"><p>Qui finiscono i libri da leggere e i giochi da giocare. Aprine uno e tocca il segnalibro.</p><a class="btn primary" href="#/cerca">${ICON.search} Cerca un titolo</a></div>`;
-  return h + `<p class="small muted">${ws.length} ${ws.length === 1 ? 'titolo' : 'titoli'}</p><div class="shelf wide">${ws.map((w) => `<a href="${ctx.link}${w.id}">${coverHTML(w)}<span class="cap">${esc(w.title)}</span></a>`).join('')}</div>`;
+  let h = `<header class="top"><button class="icon-btn" data-act="back" aria-label="Indietro">${ICON.back}</button><h1>Da fare</h1></header>${typeFilter('wishType', f)}`
+    + filterRowHTML('wishType', f, ws.length ? `<span class="small muted">${ws.length} ${ws.length === 1 ? 'titolo' : 'titoli'}</span>` : '');
+  if (!ws.length) return h + `<div class="empty"><p>Qui finiscono i libri da leggere, i giochi da giocare e i film da vedere. Aprine uno e tocca il segnalibro.</p><a class="btn primary" href="#/cerca">${ICON.search} Cerca un titolo</a></div>`;
+  return h + `<div style="height:12px"></div><div class="shelf wide">${ws.map((w) => `<a href="${ctx.link}${w.id}">${coverHTML(w)}<span class="cap">${esc(w.title)}</span></a>`).join('')}</div>`;
 }
 
 /* ================= LISTE ================= */
 function viewLists() {
-  let h = `<header class="top"><h1>Liste</h1><button class="icon-btn" data-act="new-list" aria-label="Nuova lista">${ICON.plus}</button></header>`;
+  let h = `<header class="top"><button class="icon-btn" data-act="back" aria-label="Indietro">${ICON.back}</button><h1>Liste</h1><button class="icon-btn" data-act="new-list" aria-label="Nuova lista">${ICON.plus}</button></header>`;
   if (!db.lists.length) return h + `<div class="empty"><p>Crea liste come “Gialli nordici” o “Migliori giochi del 2026” e riempile dalle schede dei titoli.</p><button class="btn primary" data-act="new-list">${ICON.plus} Nuova lista</button></div>`;
   return h + db.lists.map((l) => `<a class="list-card" href="#/lista/${l.id}">
     <div class="fan">${l.items.slice(0, 5).map((id) => coverHTML(work(id))).join('') || '<span class="muted small">Vuota</span>'}</div>
@@ -937,7 +1005,7 @@ function viewProfile() {
   } else ratings = db.entries.filter((e) => e.rating && entryDate(e) && inY(e) && work(e.workId)).map((e) => e.rating);
   const avg = ratings.length ? ratings.reduce((s, v) => s + v, 0) / ratings.length : 0;
 
-  let h = ctx.ro ? '' : `<header class="top"><h1>Il mio scaffale</h1><a class="icon-btn" href="#/impostazioni" aria-label="Impostazioni">${ICON.gear}</a></header>`;
+  let h = ctx.ro ? '' : `<header class="top"><h1>Profilo</h1><a class="icon-btn" href="#/impostazioni" aria-label="Impostazioni">${ICON.gear}</a></header>`;
 
   TYPES.forEach((t) => {
     const favs = (db.favorites[t] || []).filter((id) => work(id));
@@ -1014,7 +1082,7 @@ function openFavPicker(type) {
   const label = { book: 'libro', game: 'gioco', film: 'film' }[type];
   const body = pool.length
     ? `<input type="search" id="favq" placeholder="Cerca tra i tuoi titoli" autocomplete="off"><div id="favlist">${pool.slice(0, 60).map(row).join('')}</div>`
-    : `<p class="muted" style="margin:0">Non hai ancora nessun ${label} nello scaffale. Cercalo in “Cerca”, aprilo e tocca la stella “Preferito”.</p>`;
+    : `<p class="muted" style="margin:0">Non hai ancora nessun ${label} nello scaffale. Registralo con il + in basso e poi torna qui a sceglierlo.</p>`;
   openSheet(`Scegli un ${label} preferito`, body);
   const q = $('#favq');
   if (q) q.addEventListener('input', () => { const v = norm(q.value); $('#favlist').innerHTML = pool.filter((w) => !v || norm(w.title + ' ' + (w.origTitle || '') + ' ' + (w.creator || '')).includes(v)).slice(0, 60).map(row).join(''); });
@@ -1047,8 +1115,7 @@ function viewSettings() {
     ${toCheck ? `<a class="btn" href="#/controlla" style="justify-self:start">Titoli da controllare (${toCheck})</a>` : ''}
   </div>
 
-  <h2>Ricerca di film e giochi</h2>
-  <p class="small ${appConfig.ponte ? 'muted' : ''}">${appConfig.ponte ? 'Ponte collegato: ' + esc(appConfig.ponte) : 'Il ponte non è configurato: la ricerca di film e giochi non funziona finché non scrivi il suo indirizzo in config.txt su GitHub.'}</p>
+  ${appConfig.ponte ? '' : `<div class="note"><p class="small"><b>La ricerca di film e giochi non funziona.</b> Manca l'indirizzo del “ponte” nel file config.txt su GitHub.</p></div>`}
 
   <h2>Backup</h2>
   <div class="note"><p class="small">I tuoi dati sono salvati su questo telefono${cloud.status === 'in' ? ' e online' : ''}: ${fmtNum(nW)} titoli, ${fmtNum(db.entries.length)} voci, ${db.lists.length} liste (${fmtNum(size / 1024)} KB). Esporta un backup ogni tanto e conservalo, per esempio su Drive o via email.</p>
@@ -1104,12 +1171,24 @@ document.addEventListener('click', (ev) => {
   const w = () => curWork();
   switch (act) {
     case 'back': if (history.length > 1) history.back(); else go('#/diario'); break;
-    case 'filter': ui[el.dataset.key] = el.dataset.val; saveUI(); render(); break;
+    case 'filter': ui[el.dataset.key] = ui[el.dataset.key + 'Last'] = el.dataset.val; saveUI(); render(); break;
+    case 'filter-all': {
+      const k = el.dataset.key;
+      ui[k] = ui[k] === 'all' || !ui[k] ? (ui[k + 'Last'] || 'book') : 'all';
+      saveUI(); render(); break;
+    }
     case 'stype': ui.searchType = search.type = el.dataset.val; saveUI(); search.results = null; search.error = ''; render(); if (search.q) runSearch(search.q); break;
     case 'pick': {
       const r = search.results[+el.dataset.i];
       if (search.replace && work(search.replace)) { pickReplacement(work(search.replace), r); break; }
       const have = findBySource(r.source, r.sourceId);
+      // dal + "Registra": pannello per registrare subito, senza aprire la scheda del titolo
+      if (parseHash().name === 'registra') {
+        const x = have || (preview = { ...r });
+        openLog(x, null, { quick: true });
+        if (!have) enrichPreview(x);
+        break;
+      }
       if (have) { go(`#/opera/${have.id}`); break; }
       preview = { ...r };
       go('#/anteprima');
@@ -1129,14 +1208,6 @@ document.addEventListener('click', (ev) => {
     case 'manual': openWorkEditor({ type: search.type, title: search.q || '', creator: '', year: '', pages: null, platforms: [], genres: [], cover: '' }, true); break;
     case 'like': { const x = commitWork(); x.liked = !x.liked; save(); render(); break; }
     case 'wish': { const x = commitWork(); x.wish = !x.wish; if (x.wish) x.wishAdded = new Date().toISOString(); save(); render(); toast(x.wish ? `Aggiunto a “${TYPE[x.type].wish}”` : 'Tolto dalla lista'); break; }
-    case 'fav': {
-      const x = commitWork();
-      const f = db.favorites[x.type] = (db.favorites[x.type] || []).filter((id) => work(id));
-      if (f.includes(x.id)) { db.favorites[x.type] = f.filter((id) => id !== x.id); toast('Tolto dai preferiti'); }
-      else if (f.length >= 4) { toast('Hai già 4 preferiti: togline uno dal suo profilo'); break; }
-      else { f.push(x.id); toast('Aggiunto ai preferiti'); }
-      save(); render(); break;
-    }
     case 'to-list': openListPicker(w()); break;
     case 'log': openLog(w()); break;
     case 'edit-entry': { const e = db.entries.find((x) => x.id === el.dataset.id); if (e) openLog(work(e.workId), e); break; }
@@ -1166,11 +1237,12 @@ document.addEventListener('click', (ev) => {
       $$('button', g).forEach((b) => b.setAttribute('aria-pressed', b === el));
       $('#endWrap').hidden = el.dataset.val === 'in_corso';
       $('#nodateWrap').hidden = el.dataset.val === 'in_corso';
-      if (el.dataset.val === 'in_corso') { $('#f-nodate').checked = false; $('#datesRow').hidden = false; }
+      if (el.dataset.val === 'in_corso') setNoDate(false);
       $('#endLbl').textContent = endLabel(g.dataset.type, el.dataset.val);
       if (el.dataset.val !== 'in_corso' && !$('#f-end').value) $('#f-end').value = todayISO();
       break;
     }
+    case 'nodate': setNoDate(el.dataset.val === '1'); break;
     case 'toggle-press': el.setAttribute('aria-pressed', el.getAttribute('aria-pressed') !== 'true'); break;
     case 'reveal': el.classList.toggle('show'); break;
     case 'close-sheet': closeSheet(); break;
@@ -1265,7 +1337,6 @@ document.addEventListener('submit', (ev) => {
 });
 document.addEventListener('change', (ev) => {
   if (ev.target.dataset && ev.target.dataset.list) { const p = $(`[data-pos-for="${ev.target.dataset.list}"]`, sheet); if (p) p.hidden = !ev.target.checked; }
-  if (ev.target.id === 'f-nodate') { $('#datesRow').hidden = ev.target.checked; if (!ev.target.checked && !$('#f-end').value) $('#f-end').value = todayISO(); }
   if (ev.target.id === 'yearSel' && ev.target.value) { ui.statsYear = ev.target.value; saveUI(); render(); }
   if (ev.target.id === 'diarySort') { diarySort = ev.target.value; ui.diaryLimit = 0; render(); }
 });
